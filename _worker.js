@@ -3,17 +3,17 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const userAgent = (request.headers.get('User-Agent') || 'null').toLowerCase();
-
+    
     // 初始化配置
-    const config = initializeConfig(env, url);
-
+    const config = await initializeConfig(env, url);
+    
     // 验证访问权限
     if (!await isAuthorized(url, config)) {
-      return handleUnauthorized(request, config, url, userAgent);
+      return handleUnauthorized(request, env, config, url, userAgent);
     }
-
+    
     // 处理订阅请求
-    return await handleSubscription(request, config, url, userAgent);
+    return handleSubscription(request, env, config, url, userAgent);
   }
 };
 
@@ -27,9 +27,14 @@ export default {
 async function MD5MD5(text) {
   const encoder = new TextEncoder();
   const firstPass = await crypto.subtle.digest('MD5', encoder.encode(text));
-  const firstHex = Array.from(new Uint8Array(firstPass)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const firstHex = Array.from(new Uint8Array(firstPass))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
   const secondPass = await crypto.subtle.digest('MD5', encoder.encode(firstHex.slice(7, 27)));
-  return Array.from(new Uint8Array(secondPass)).map(b => b.toString(16).padStart(2, '0')).join('').toLowerCase();
+  return Array.from(new Uint8Array(secondPass))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+    .toLowerCase();
 }
 
 /**
@@ -38,8 +43,13 @@ async function MD5MD5(text) {
  * @returns {string} 解码后的字符串
  */
 function base64Decode(str) {
-  const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
-  return new TextDecoder('utf-8').decode(bytes);
+  try {
+    const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch (e) {
+    console.error('Base64 解码失败:', e);
+    return '';
+  }
 }
 
 /**
@@ -48,6 +58,7 @@ function base64Decode(str) {
  * @returns {boolean} 是否为有效 Base64
  */
 function isValidBase64(str) {
+  if (!str || typeof str !== 'string') return false;
   const cleanStr = str.replace(/\s/g, '');
   const base64Regex = /^[A-Za-z0-9+/=]+$/;
   return base64Regex.test(cleanStr);
@@ -56,14 +67,15 @@ function isValidBase64(str) {
 /**
  * 分割并清理订阅链接
  * @param {string} envadd 原始订阅数据
- * @returns {Promise<string[]>} 清理后的链接数组
+ * @returns {string[]} 清理后的链接数组
  */
-async function ADD(envadd) {
+function ADD(envadd) {
+  if (!envadd) return [];
   const addtext = envadd.replace(/[	"'|\r\n]+/g, ',').replace(/,+/g, ',');
   let cleanedText = addtext;
   if (addtext.startsWith(',')) cleanedText = addtext.slice(1);
-  if (addtext.endsWith(',')) cleanedText = addtext.slice(0, -1);
-  return cleanedText.split(',');
+  if (addtext.endsWith(',')) cleanedText = cleanedText.slice(0, -1);
+  return cleanedText ? cleanedText.split(',').filter(Boolean) : [];
 }
 
 // --- 配置初始化和权限验证 ---
@@ -72,23 +84,25 @@ async function ADD(envadd) {
  * 初始化配置
  * @param {Object} env 环境变量
  * @param {URL} url 请求 URL
- * @returns {Object} 配置对象
+ * @returns {Promise<Object>} 配置对象
  */
-function initializeConfig(env, url) {
+async function initializeConfig(env, url) {
   const mytoken = env.TOKEN || 'auto';
+  const guestToken = env.GUESTTOKEN || env.GUEST || await MD5MD5(mytoken);
+  
   return {
     mytoken,
     botToken: env.TGTOKEN || '',
     chatId: env.TGID || '',
-    tgEnabled: env.TG || 0,
+    tgEnabled: parseInt(env.TG || '0'),
     subConverter: env.SUBAPI || 'SUBAPI.cmliussss.net',
     subProtocol: (env.SUBAPI || '').includes('http://') ? 'http' : 'https',
     subConfig: env.SUBCONFIG || 'https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini',
     fileName: env.SUBNAME || 'CF-Workers-SUB',
-    subUpdateTime: env.SUBUPTIME || 6,
+    subUpdateTime: parseInt(env.SUBUPTIME || '6'),
     total: 99 * 1099511627776, // 99TB
     timestamp: 4102329600000, // 2099-12-31
-    guestToken: env.GUESTTOKEN || env.GUEST || MD5MD5(mytoken) // 注意：这里需要 await，但在初始化时异步处理
+    guestToken
   };
 }
 
@@ -114,25 +128,31 @@ async function isAuthorized(url, config) {
   const token = url.searchParams.get('token');
   const fakeToken = await generateFakeToken(config.mytoken);
   const path = url.pathname;
-  return [config.mytoken, fakeToken, config.guestToken].includes(token) ||
+  
+  return token && [config.mytoken, fakeToken, config.guestToken].includes(token) ||
     path === `/${config.mytoken}` || path.includes(`/${config.mytoken}?`);
 }
 
 /**
  * 处理未授权请求
  * @param {Request} request 请求对象
+ * @param {Object} env 环境变量
  * @param {Object} config 配置对象
  * @param {URL} url 请求 URL
  * @param {string} userAgent 用户代理
- * @returns {Response} 响应对象
+ * @returns {Promise<Response>} 响应对象
  */
-async function handleUnauthorized(request, config, url, userAgent) {
+async function handleUnauthorized(request, env, config, url, userAgent) {
   if (config.tgEnabled === 1 && url.pathname !== '/' && url.pathname !== '/favicon.ico') {
-    await sendMessage(`#异常访问 ${config.fileName}`, request.headers.get('CF-Connecting-IP'), `UA: ${userAgent}\n域名: ${url.hostname}\n入口: ${url.pathname + url.search}`);
+    await sendMessage(config, `#异常访问 ${config.fileName}`, 
+      request.headers.get('CF-Connecting-IP'), 
+      `UA: ${userAgent}\n域名: ${url.hostname}\n入口: ${url.pathname + url.search}`);
   }
+  
   if (env.URL302) return Response.redirect(env.URL302, 302);
   if (env.URL) return await proxyURL(env.URL, url);
-  return new Response(await nginx(), {
+  
+  return new Response(nginx(), {
     status: 200,
     headers: { 'Content-Type': 'text/html; charset=UTF-8' }
   });
@@ -140,9 +160,9 @@ async function handleUnauthorized(request, config, url, userAgent) {
 
 /**
  * 返回未授权页面
- * @returns {Promise<string>} HTML 页面内容
+ * @returns {string} HTML 页面内容
  */
-async function nginx() {
+function nginx() {
   return `
     <!DOCTYPE html>
     <html>
@@ -161,15 +181,23 @@ async function nginx() {
 
 /**
  * 发送 Telegram 通知
+ * @param {Object} config 配置对象
  * @param {string} type 消息类型
  * @param {string} ip 用户 IP
  * @param {string} add_data 附加数据
+ * @returns {Promise<Response|void>} 请求响应
  */
-async function sendMessage(type, ip, add_data = "") {
+async function sendMessage(config, type, ip, add_data = "") {
   if (!config.botToken || !config.chatId) return;
+  
   const msg = `${type}\nIP: ${ip}\n${add_data}`;
   const url = `https://api.telegram.org/bot${config.botToken}/sendMessage?chat_id=${config.chatId}&parse_mode=HTML&text=${encodeURIComponent(msg)}`;
-  return fetch(url, { method: 'get' });
+  
+  try {
+    return await fetch(url, { method: 'get' });
+  } catch (error) {
+    console.error('Telegram 通知发送失败:', error);
+  }
 }
 
 // --- 订阅处理 ---
@@ -177,63 +205,102 @@ async function sendMessage(type, ip, add_data = "") {
 /**
  * 处理订阅请求
  * @param {Request} request 请求对象
+ * @param {Object} env 环境变量
  * @param {Object} config 配置对象
  * @param {URL} url 请求 URL
  * @param {string} userAgent 用户代理
  * @returns {Promise<Response>} 订阅响应
  */
-async function handleSubscription(request, config, url, userAgent) {
+async function handleSubscription(request, env, config, url, userAgent) {
   try {
-    const links = await fetchLinks(config, env);
-    const subscriptionData = await processSubscription(links, userAgent, config, url);
+    const links = await fetchLinks(env);
+    const subscriptionData = await processSubscription(links, request, userAgent, config, url);
+    
     return new Response(subscriptionData, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Profile-Update-Interval': `${config.subUpdateTime}`,
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
       }
     });
   } catch (error) {
     console.error('订阅处理失败:', error);
-    return new Response('服务暂不可用，请稍后重试', { status: 500 });
+    return new Response('服务暂不可用，请稍后重试', { 
+      status: 500,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    });
   }
 }
 
 /**
  * 获取订阅链接
- * @param {Object} config 配置对象
  * @param {Object} env 环境变量
  * @returns {Promise<string[]>} 订阅链接数组
  */
-async function fetchLinks(config, env) {
-  let mainData = env.LINK || ''; // 默认值需根据实际情况定义
+async function fetchLinks(env) {
+  let mainData = env.LINK || '';
+  
   if (env.LINKSUB) {
-    const additionalLinks = await ADD(env.LINKSUB);
-    mainData += '\n' + additionalLinks.join('\n');
+    const additionalLinks = ADD(env.LINKSUB);
+    if (additionalLinks.length > 0) {
+      mainData += (mainData ? '\n' : '') + additionalLinks.join('\n');
+    }
   }
-  return await ADD(mainData);
+  
+  return ADD(mainData);
 }
 
 /**
  * 处理订阅数据
  * @param {string[]} links 订阅链接数组
+ * @param {Request} request 请求对象
  * @param {string} userAgent 用户代理
  * @param {Object} config 配置对象
  * @param {URL} url 请求 URL
  * @returns {Promise<string>} 订阅内容
  */
-async function processSubscription(links, userAgent, config, url) {
+async function processSubscription(links, request, userAgent, config, url) {
+  if (!links || links.length === 0) {
+    return '没有可用的订阅链接';
+  }
+  
   const subscriptionFormat = determineSubscriptionFormat(userAgent, url.searchParams);
   const [subscriptionContent, subUrls] = await getSUB(links, request, subscriptionFormat, userAgent);
+  
+  // 处理空内容情况
+  if (!subscriptionContent.length && !subUrls) {
+    return '无法获取订阅内容';
+  }
+  
   const uniqueContent = deduplicateLinks(subscriptionContent.join('\n'));
-
+  
   if (subscriptionFormat === 'base64') {
     return btoa(uniqueContent);
   } else {
+    if (!subUrls) {
+      return '无法获取订阅内容';
+    }
+    
     const subConverterUrl = generateSubConverterUrl(subscriptionFormat, subUrls, config);
-    const response = await fetch(subConverterUrl);
-    if (!response.ok) throw new Error('订阅转换失败');
+    const response = await fetch(subConverterUrl, {
+      headers: {
+        'User-Agent': `v2rayN/6.45 cmliu/CF-Workers-SUB ${subscriptionFormat}(${userAgent})`
+      },
+      timeout: 5000
+    }).catch(error => {
+      console.error('订阅转换请求失败:', error);
+      throw new Error('订阅转换服务不可用');
+    });
+    
+    if (!response.ok) {
+      throw new Error(`订阅转换失败: ${response.status}`);
+    }
+    
     let content = await response.text();
-    if (subscriptionFormat === 'clash') content = await clashFix(content); // clashFix 需实现
+    if (subscriptionFormat === 'clash') {
+      content = await clashFix(content);
+    }
+    
     return content;
   }
 }
@@ -245,8 +312,8 @@ async function processSubscription(links, userAgent, config, url) {
  * @returns {string} 订阅格式
  */
 function determineSubscriptionFormat(userAgent, searchParams) {
-  if (userAgent.includes('clash') || searchParams.has('clash')) return 'clash';
-  if (userAgent.includes('sing-box') || searchParams.has('sb')) return 'singbox';
+  if (searchParams.has('clash') || userAgent.includes('clash')) return 'clash';
+  if (searchParams.has('sb') || userAgent.includes('sing-box')) return 'singbox';
   return 'base64';
 }
 
@@ -268,7 +335,12 @@ function generateSubConverterUrl(format, subUrls, config) {
  * @returns {string} 去重后的文本
  */
 function deduplicateLinks(text) {
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line && line.includes('://'));
+  if (!text) return '';
+  
+  const lines = text.split('\n')
+    .map(line => line.trim())
+    .filter(line => line && line.includes('://'));
+  
   return [...new Set(lines)].join('\n');
 }
 
@@ -282,22 +354,40 @@ function deduplicateLinks(text) {
  */
 async function getSUB(api, request, ua, userAgentHeader) {
   if (!api || !api.length) return [[], ''];
+  
   const uniqueApi = [...new Set(api)];
-  const results = await Promise.all(uniqueApi.map(url =>
-    fetchWithTimeout(url, request, ua, userAgentHeader, 2000)
+  const fetchPromises = uniqueApi.map(url => 
+    fetchWithTimeout(url, request, ua, userAgentHeader, 3000)
       .catch(err => ({ status: 'error', value: null, apiUrl: url }))
-  ));
-
-  let newApi = '';
+  );
+  
+  const results = await Promise.allSettled(fetchPromises);
+  
+  let newApi = [];
   let subUrls = '';
-  for (const { status, value, apiUrl } of results) {
-    if (status === 'fulfilled' && value) {
-      if (value.includes('proxies:')) subUrls += `|${apiUrl}`;
-      else if (value.includes('://')) newApi += `${value}\n`;
-      else if (isValidBase64(value)) newApi += `${base64Decode(value)}\n`;
+  
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      const { status, value, apiUrl } = result.value;
+      
+      if (status === 'fulfilled' && value) {
+        if (value.includes('proxies:')) {
+          subUrls += subUrls ? `|${apiUrl}` : apiUrl;
+        } else if (value.includes('://')) {
+          newApi.push(value);
+        } else if (isValidBase64(value)) {
+          try {
+            const decoded = base64Decode(value);
+            if (decoded) newApi.push(decoded);
+          } catch (e) {
+            console.error('Base64 解码失败:', e);
+          }
+        }
+      }
     }
   }
-  return [await ADD(newApi), subUrls];
+  
+  return [ADD(newApi.join('\n')), subUrls];
 }
 
 /**
@@ -312,9 +402,17 @@ async function getSUB(api, request, ua, userAgentHeader) {
 async function fetchWithTimeout(url, request, ua, userAgentHeader, timeout) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
-  const response = await getUrl(request, url, ua, userAgentHeader, { signal: controller.signal });
-  clearTimeout(timeoutId);
-  return { status: 'fulfilled', value: await response.text(), apiUrl: url };
+  
+  try {
+    const response = await getUrl(request, url, ua, userAgentHeader, { signal: controller.signal });
+    const text = await response.text();
+    clearTimeout(timeoutId);
+    return { status: 'fulfilled', value: text, apiUrl: url };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    console.error(`获取订阅失败 (${url}):`, error);
+    return { status: 'error', value: null, apiUrl: url };
+  }
 }
 
 /**
@@ -327,35 +425,41 @@ async function fetchWithTimeout(url, request, ua, userAgentHeader, timeout) {
  * @returns {Promise<Response>} 响应对象
  */
 async function getUrl(request, targetUrl, ua, userAgentHeader, options = {}) {
-  const newHeaders = new Headers(request.headers);
+  const newHeaders = new Headers();
   newHeaders.set("User-Agent", `v2rayN/6.45 cmliu/CF-Workers-SUB ${ua}(${userAgentHeader})`);
+  
   const modifiedRequest = new Request(targetUrl, {
-    method: request.method,
+    method: "GET",
     headers: newHeaders,
-    body: request.method === "GET" ? null : request.body,
     redirect: "follow",
     ...options
   });
+  
   return await fetch(modifiedRequest);
 }
 
-// --- 未实现函数占位符（需根据需求补充） ---
-
 /**
- * 修复 Clash 订阅内容（占位符）
+ * 修复 Clash 订阅内容
  * @param {string} content 原始内容
  * @returns {Promise<string>} 修复后的内容
  */
 async function clashFix(content) {
-  return content; // 需根据实际需求实现
+  // 这里可以根据需求实现 Clash 配置修复
+  // 例如修改端口、DNS设置等
+  return content;
 }
 
 /**
- * 代理 URL 请求（占位符）
+ * 代理 URL 请求
  * @param {string} targetUrl 目标 URL
  * @param {URL} url 请求 URL
  * @returns {Promise<Response>} 响应对象
  */
 async function proxyURL(targetUrl, url) {
-  return fetch(targetUrl); // 需根据实际需求实现
+  try {
+    return await fetch(targetUrl);
+  } catch (error) {
+    console.error('代理请求失败:', error);
+    return new Response('代理服务暂不可用', { status: 502 });
+  }
 }
