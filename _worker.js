@@ -464,3 +464,204 @@ function validateConvertedContent(content) {
   
   return content;
 }
+// ========================
+// 交互界面生成
+// ========================
+async function generateEditorUI(savedContent) {
+  return new Response(`
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>订阅管理 - Secure SUB</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs/qrcode.min.js" 
+    integrity="sha384-z/4hwxkHZAH4ANXxR6CVyJsb9vyV0OdN9EF3B6/ZCacN18zJm+UUnpWYJtdmRvc" 
+    crossorigin="anonymous"></script>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900">
+  <div class="container mx-auto px-4 py-8 max-w-4xl">
+    <!-- 头部 -->
+    <div class="mb-8 text-center">
+      <h1 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">Secure SUB 管理面板</h1>
+      <p class="text-gray-600 dark:text-gray-400">版本 2.0 | 最后更新: 2025-03-20</p>
+    </div>
+
+    <!-- 订阅链接区 -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 mb-6">
+      <h2 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">订阅地址</h2>
+      <div class="space-y-4">
+        ${generateFormatSelector('clash', 'Clash')}
+        ${generateFormatSelector('singbox', 'SingBox')}
+        ${generateFormatSelector('surge', 'Surge')}
+      </div>
+    </div>
+
+    <!-- 编辑区 -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
+      <h2 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">订阅源管理</h2>
+      <textarea 
+        id="editor" 
+        class="w-full h-64 p-3 border rounded-lg font-mono text-sm dark:bg-gray-700 dark:border-gray-600"
+        placeholder="每行一个订阅链接或节点信息...">${savedContent}</textarea>
+      <div class="mt-4 flex justify-between items-center">
+        <button onclick="saveContent()" 
+          class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition-colors">
+          保存配置
+        </button>
+        <span id="status" class="text-sm text-gray-500"></span>
+      </div>
+    </div>
+
+    <!-- 帮助信息 -->
+    <div class="mt-6 text-sm text-gray-600 dark:text-gray-400">
+      <p>✅ 支持协议：VLESS / VMess / Trojan / Shadowsocks</p>
+      <p>⏰ 订阅缓存时间：${SUBUpdateTime} 小时</p>
+    </div>
+  </div>
+
+  <script>
+  // 生成二维码
+  function generateQRCode(selector, url) {
+    const container = document.getElementById(selector);
+    container.innerHTML = '';
+    new QRCode(container, {
+      text: url,
+      width: 160,
+      height: 160,
+      colorDark : "#000000",
+      colorLight : "#ffffff",
+      correctLevel : QRCode.CorrectLevel.H
+    });
+  }
+
+  // 格式选择器
+  function updateFormat(format) {
+    const baseUrl = window.location.origin + '/${mytoken}';
+    const urlMap = {
+      clash: \`\${baseUrl}?clash\`,
+      singbox: \`\${baseUrl}?singbox\`,
+      surge: \`\${baseUrl}?surge\`
+    };
+    
+    document.querySelectorAll('.qrcode-container').forEach(el => el.style.display = 'none');
+    document.getElementById(\`qrcode-\${format}\`).style.display = 'block';
+    generateQRCode(\`qrcode-\${format}\`, urlMap[format]);
+  }
+
+  // 保存内容
+  async function saveContent() {
+    const btn = document.querySelector('button');
+    const status = document.getElementById('status');
+    btn.disabled = true;
+    status.textContent = '保存中...';
+
+    try {
+      const res = await fetch(window.location.href, {
+        method: 'POST',
+        body: document.getElementById('editor').value
+      });
+      
+      if (!res.ok) throw new Error(res.statusText);
+      status.textContent = \`保存成功 \${new Date().toLocaleTimeString()}\`;
+    } catch (e) {
+      status.textContent = '保存失败，请检查网络';
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => status.textContent = '', 3000);
+    }
+  }
+
+  // 初始化默认二维码
+  window.addEventListener('DOMContentLoaded', () => updateFormat('clash'));
+  </script>
+</body>
+</html>
+`, {
+    headers: { "Content-Type": "text/html; charset=utf-8" }
+  });
+}
+
+function generateFormatSelector(format, label) {
+  return `
+<div class="border rounded-lg p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+  <div class="flex items-center justify-between mb-2">
+    <span class="font-medium">${label}</span>
+    <button onclick="updateFormat('${format}')" 
+      class="text-blue-600 dark:text-blue-400 hover:underline">
+      生成二维码
+    </button>
+  </div>
+  <div id="qrcode-${format}" class="qrcode-container" style="display:none"></div>
+</div>`;
+}
+
+// ========================
+// 频率限制模块
+// ========================
+async function checkRateLimit(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP');
+  const key = \`rate_limit:\${ip}\`;
+  
+  // 从 KV 获取计数
+  let count = parseInt(await env.KV.get(key)) || 0;
+  if (count > 100) {
+    return new Response('请求过于频繁，请稍后再试', {
+      status: 429,
+      headers: { 'Retry-After': '60' }
+    });
+  }
+  
+  // 更新计数
+  await env.KV.put(key, (count + 1).toString(), {
+    expirationTtl: 60 // 60 秒窗口期
+  });
+  
+  return null;
+}
+
+// ========================
+// 最终整合
+// ========================
+export default {
+  async fetch(request, env) {
+    try {
+      // 初始化环境
+      initEnv(env);
+      
+      // 频率限制检查
+      const limitResponse = await checkRateLimit(request, env);
+      if (limitResponse) return limitResponse;
+
+      // Token 验证
+      if (!(await validateToken(request))) {
+        return new Response(await generateBlockPage(), { status: 403 });
+      }
+
+      // 处理编辑请求
+      if (isEditRequest(request)) {
+        return handleKVEditor(request, env, 'LINK.txt');
+      }
+
+      // 获取订阅数据
+      const { localNodes, remoteSubs } = await initSubscriptionSources(env, request);
+      const { nodes, converterUrls } = await fetchSubscriptions(remoteSubs, request);
+      
+      // 生成最终响应
+      return generateSubscriptionResponse({
+        localNodes,
+        nodes,
+        converterUrls
+      }, request);
+
+    } catch (error) {
+      console.error(\`[ERROR] \${error.stack}\`);
+      return new Response(\`<h1>服务异常</h1><p>\${error.message}\`, {
+        status: 500,
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+  }
+};
+
