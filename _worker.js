@@ -1981,60 +1981,24 @@ function renderDashboard(auth) {
   });
 }
 
-/**
- * 检查URL格式
- */
-function parseURL(urlString) {
-  try {
-    const url = new URL(urlString);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch (e) {
+ catch (e) {
     return null;
   }
 }
 
-/**
- * Base64解码
- */
-function base64Decode(str) {
-  try {
-    return atob(str);
-  } catch (e) {
+ catch (e) {
     console.error('Base64解码失败:', e);
     return str;
   }
 }
 
-/**
- * 检查是否有效的Base64编码
- */
-function isValidBase64(str) {
-  if (!str) return false;
-  // 使用正则表达式检查base64编码的特征
-  const base64Regex = /^[A-Za-z0-9+/]+={0,2}$/;
+$/;
   return base64Regex.test(str);
 }
 
-/**
- * 格式化字节大小
- */
-function formatBytes(bytes, decimals = 2) {
-  if (bytes === 0) return '0 Bytes';
-  
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-}
 
-/**
- * 返回错误响应
- */
-function errorResponse(message, status = 500) {
-  return new Response(JSON.stringify({ error: message }), {
+
+), {
     status,
     headers: {
       'Content-Type': 'application/json'
