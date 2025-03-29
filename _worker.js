@@ -1899,7 +1899,7 @@ function renderDashboard(auth) {
             btn.addEventListener('click', deleteSubscriptionHandler);
           });
         } catch (error) {
-          container.innerHTML = `<div class="alert alert-error">加载失败: ${error.message}</div>`;
+          container.innerHTML = '<div class="alert alert-error">加载失败：' + error.message + '</div>';
         }
       }
       
