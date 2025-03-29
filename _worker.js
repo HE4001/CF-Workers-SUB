@@ -1856,7 +1856,7 @@ function renderDashboard(auth) {
           const data = await response.json();
           
           if (!data.success) {
-            container.innerHTML = `<div class="alert alert-error">${data.message || '加载失败'}</div>`;
+            container.innerHTML = '<div class="alert alert-error">' + data.message + '</div>';
             return;
           }
           
