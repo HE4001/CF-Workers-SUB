@@ -1949,23 +1949,6 @@ function renderDashboard(auth) {
     }
     
     // 显示错误消息
-    function showError(message) {
-      const errorDiv = document.getElementById('errorMessage');
-      errorDiv.textContent = message;
-      errorDiv.style.display = 'block';
-      
-      // 5秒后自动隐藏
-      setTimeout(() => {
-        errorDiv.style.display = 'none';
-      }, 5000);
-    }
-    
-    // 辅助函数：截断URL
-        } else if (password === CONFIG.auth.guestToken) {
-          const guestCookie = createSessionCookie('guest', CONFIG.auth.guestToken);
-          return Response.redirect(`${url.origin}/`, 302, {
-            headers: { 'Set-Cookie': guestCookie }
-          });
         } else {
           return Response.redirect(`${url.origin}/?error=1`, 302);
         }
