@@ -150,7 +150,7 @@ function isValidBase64(str) {
  * @returns {Response} 响应对象
  */
 function errorResponse(message, status = 403) {
-  const html = const html = '  <!DOCTYPE html>\n' +
+  const html = '  <!DOCTYPE html>\n' +
   '  <html lang="zh-CN">\n' +
   '  <head>\n' +
   '    <meta charset="UTF-8">\n' +
