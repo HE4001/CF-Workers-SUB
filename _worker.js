@@ -150,62 +150,62 @@ function isValidBase64(str) {
  * @returns {Response} 响应对象
  */
 function errorResponse(message, status = 403) {
-  const html = '<!DOCTYPE html>\n' +
-  '<html lang="zh-CN">\n' +
-  '<head>\n' +
-  '  <meta charset="UTF-8">\n' +
-  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
-  '  <title>错误 - ' + CONFIG.ui.title + '</title>\n' +
-  '  <style>\n' +
-  '    body {\n' +
-  '      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;\n' +
-  '      display: flex;\n' +
-  '      justify-content: center;\n' +
-  '      align-items: center;\n' +
-  '      height: 100vh;\n' +
-  '      margin: 0;\n' +
-  '      background-color: #f5f5f5;\n' +
-  '    }\n' +
-  '    .error-container {\n' +
-  '      background: white;\n' +
-  '      padding: 2rem;\n' +
-  '      border-radius: 8px;\n' +
-  '      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);\n' +
-  '      max-width: 90%;\n' +
-  '      width: 400px;\n' +
-  '      text-align: center;\n' +
-  '    }\n' +
-  '    h2 {\n' +
-  '      color: #e74c3c;\n' +
-  '      margin-top: 0;\n' +
-  '    }\n' +
-  '    p {\n' +
-  '      color: #444;\n' +
-  '      line-height: 1.5;\n' +
-  '    }\n' +
-  '    .back-button {\n' +
-  '      display: inline-block;\n' +
-  '      margin-top: 1rem;\n' +
-  '      padding: 0.5rem 1rem;\n' +
-  '      background-color: #3498db;\n' +
-  '      color: white;\n' +
-  '      text-decoration: none;\n' +
-  '      border-radius: 4px;\n' +
-  '      transition: background-color 0.2s;\n' +
-  '    }\n' +
-  '    .back-button:hover {\n' +
-  '      background-color: #2980b9;\n' +
-  '    }\n' +
-  '  </style>\n' +
-  '</head>\n' +
-  '<body>\n' +
-  '  <div class="error-container">\n' +
-  '    <h2>访问错误</h2>\n' +
-  '    <p>' + message + '</p>\n' +
-  '    <a href="/" class="back-button">返回首页</a>\n' +
-  '  </div>\n' +
-  '</body>\n' +
-  '</html>';
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>错误 - ${CONFIG.ui.title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f5f5f5;
+    }
+    .error-container {
+      background: white;
+      padding: 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      max-width: 90%;
+      width: 400px;
+      text-align: center;
+    }
+    h2 {
+      color: #e74c3c;
+      margin-top: 0;
+    }
+    p {
+      color: #444;
+      line-height: 1.5;
+    }
+    .back-button {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.5rem 1rem;
+      background-color: #3498db;
+      color: white;
+      text-decoration: none;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+    .back-button:hover {
+      background-color: #2980b9;
+    }
+  </style>
+</head>
+<body>
+  <div class="error-container">
+    <h2>访问错误</h2>
+    <p>${message}</p>
+    <a href="/" class="back-button">返回首页</a>
+  </div>
+</body>
+</html>`;
   
   return new Response(html, {
     status,
@@ -213,51 +213,8 @@ function errorResponse(message, status = 403) {
       'content-type': 'text/html; charset=utf-8',
     },
   });
-}\n' +
-  '      .error-container {\n' +
-  '        background: white;\n' +
-  '        padding: 2rem;\n' +
-  '        border-radius: 8px;\n' +
-  '        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);\n' +
-  '        max-width: 90%;\n' +
-  '        width: 400px;\n' +
-  '        text-align: center;\n' +
-  '      }\n' +
-  '      .error-code {\n' +
-  '        font-size: 4rem;\n' +
-  '        font-weight: bold;\n' +
-  '        color: #e74c3c;\n' +
-  '        margin: 0;\n' +
-  '      }\n' +
-  '      .error-message {\n' +
-  '        margin: 1rem 0;\n' +
-  '        color: #333;\n' +
-  '      }\n' +
-  '      .back-link {\n' +
-  '        display: inline-block;\n' +
-  '        margin-top: 1rem;\n' +
-  '        color: #3498db;\n' +
-  '        text-decoration: none;\n' +
-  '      }\n' +
-  '      .back-link:hover {\n' +
-  '        text-decoration: underline;\n' +
-  '      }\n' +
-  '    </style>\n' +
-  '  </head>\n' +
-  '  <body>\n' +
-  '    <div class="error-container">\n' +
-  '      <p class="error-code">\' + status + \'</p>\n' +
-  '      <p class="error-message">\' + message + \'</p>\n' +
-  '      <a href="/" class="back-link">返回首页</a>\n' +
-  '    </div>'  </body>
-  </html>
-  ';
-  
-  return new Response(html, {
-    status: status,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' }
-  });
 }
+
 
 /**
  * 辅助函数: 格式化字节大小
