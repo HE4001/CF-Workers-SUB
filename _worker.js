@@ -1518,7 +1518,7 @@ async function handleAssetRequest(pathname) {
  * 渲染登录页面
  */
 function renderLoginPage() {
-  const html = '  <!DOCTYPE html>
+  const html = `  <!DOCTYPE html>
   <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
@@ -1668,7 +1668,7 @@ function renderLoginPage() {
     </div>
   </body>
   </html>
-  ';
+  `;
   
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
