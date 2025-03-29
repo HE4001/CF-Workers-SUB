@@ -1961,69 +1961,6 @@ function renderDashboard(auth) {
     }
     
     // 辅助函数：截断URL
-    function shortenUrl(url) {
-      try {
-        const urlObj = new URL(url);
-        return urlObj.hostname + (urlObj.pathname !== '/' ? urlObj.pathname : '') + 
-               (urlObj.search ? '...' : '');
-      } catch (e) {
-        return url.length > 30 ? url.substring(0, 27) + '...' : url;
-      }
-    }
-  </script>
-</body>
-</html>`;
-
-  return new Response(html, {
-    headers: {
-      'content-type': 'text/html; charset=utf-8',
-    }
-  });
-}
-
- catch (e) {
-    return null;
-  }
-}
-
- catch (e) {
-    console.error('Base64解码失败:', e);
-    return str;
-  }
-}
-
-$/;
-  return base64Regex.test(str);
-}
-
-
-
-), {
-    status,
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  });
-}
-
-// 主处理函数
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    
-    try {
-      // 处理登录请求
-      if (path === '/login' && request.method === 'POST') {
-        const formData = await request.formData();
-        const password = formData.get('password');
-        
-        // 检查密码是否匹配管理员或访客密码
-        if (password === CONFIG.auth.adminToken) {
-          const adminCookie = createSessionCookie('admin', CONFIG.auth.adminToken);
-          return Response.redirect(`${url.origin}/`, 302, {
-            headers: { 'Set-Cookie': adminCookie }
-          });
         } else if (password === CONFIG.auth.guestToken) {
           const guestCookie = createSessionCookie('guest', CONFIG.auth.guestToken);
           return Response.redirect(`${url.origin}/`, 302, {
