@@ -72,7 +72,7 @@ function loadConfig(env) {
       console.warn('警告: 未设置安全的管理员令牌，请在环境变量中设置 ADMIN_TOKEN');
       // 如果未设置，生成随机令牌并记录到日志
       CONFIG.auth.adminToken = generateUUID();
-      console.log(`已自动生成管理员令牌: ${CONFIG.auth.adminToken}`);
+      console.log('自动生成管理员令牌: ' + CONFIG.auth.adminToken);
     }
     
     return true;
@@ -150,13 +150,12 @@ function isValidBase64(str) {
  * @returns {Response} 响应对象
  */
 function errorResponse(message, status = 403) {
-  const html = `
-  <!DOCTYPE html>
+  const html = '  <!DOCTYPE html>
   <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>错误 - ${CONFIG.ui.title}</title>
+    <title>错误 - ' + CONFIG.ui.title + '</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -199,13 +198,13 @@ function errorResponse(message, status = 403) {
   </head>
   <body>
     <div class="error-container">
-      <p class="error-code">${status}</p>
-      <p class="error-message">${message}</p>
+      <p class="error-code">' + status + '</p>
+      <p class="error-message">' + message + '</p>
       <a href="/" class="back-link">返回首页</a>
     </div>
   </body>
   </html>
-  `;
+  ';
   
   return new Response(html, {
     status: status,
@@ -339,7 +338,7 @@ async function handleRequest(request, env) {
   
   // 如果是管理员令牌在路径中，重定向到主页并设置Cookie
   if (auth.isAuthenticated && url.pathname.includes('/' + auth.token)) {
-    return Response.redirect(`${url.origin}/`, 302);
+    return Response.redirect('{url.origin}/', 302);
   }
   
   // 未找到资源
@@ -360,11 +359,11 @@ async function handleLoginRequest(request) {
     
     if (password === CONFIG.auth.adminToken) {
       const response = Response.redirect('/', 302);
-      response.headers.set('Set-Cookie', `token=${CONFIG.auth.adminToken}; path=/; HttpOnly; SameSite=Lax; Max-Age=${CONFIG.auth.tokenExpiry * 3600}`);
+      response.headers.set('Set-Cookie', 'oken=' + CONFIG.auth.adminToken + '; path=/; HttpOnly; SameSite=Lax; Max-Age=' + CONFIG.auth.tokenExpiry * 3600);
       return response;
     } else if (password === CONFIG.auth.guestToken) {
       const response = Response.redirect('/', 302);
-      response.headers.set('Set-Cookie', `token=${CONFIG.auth.guestToken}; path=/; HttpOnly; SameSite=Lax; Max-Age=${CONFIG.auth.tokenExpiry * 3600}`);
+      response.headers.set('Set-Cookie', 'oken=' + CONFIG.auth.guestToken + '; path=/; HttpOnly; SameSite=Lax; Max-Age=' + CONFIG.auth.tokenExpiry * 3600);
       return response;
     }
     
@@ -447,7 +446,7 @@ async function handleListSubscriptions(env) {
           });
         }
       } catch (error) {
-        console.error(`获取订阅 ${key.name} 失败:`, error);
+        console.error('取订阅 ' + key.name + ' 失败:', error);
       }
     }
     
@@ -574,7 +573,7 @@ async function handleDeleteSubscription(request, env) {
     if (!exists) {
       return new Response(JSON.stringify({ 
         error: '订阅不存在', 
-        message: `名为 ${name} 的订阅不存在` 
+        message: '为 ' + name + ' 的订阅不存在' 
       }), {
         status: 404,
         headers: { 'Content-Type': 'application/json' }
@@ -726,7 +725,7 @@ async function handleTestSubscription(request) {
       if (!response.ok) {
         return new Response(JSON.stringify({ 
           error: '订阅获取失败', 
-          message: `HTTP错误: ${response.status} ${response.statusText}` 
+          message: 'TTP错误: ' + response.status + ' ' + response.statusText 
         }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' }
@@ -825,7 +824,7 @@ async function handleSubscriptionRequest(request, url, auth, env) {
   ];
   
   if (!validFormats.includes(format)) {
-    return errorResponse(`不支持的订阅格式: ${format}`, 400);
+    return errorResponse('支持的订阅格式: ' + format, 400);
   }
   
   // 令牌和缓存检查
@@ -861,7 +860,7 @@ async function handleSubscriptionRequest(request, url, auth, env) {
     
     // 设置Content-Disposition为下载文件
     const fileExtension = getFileExtension(format);
-    const contentDisposition = `attachment; filename="${filename}.${fileExtension}"`;
+    const contentDisposition = 'ttachment; filename="' + filename + '.' + fileExtension + '"';
     
     return new Response(convertedContent, {
       headers: {
@@ -873,7 +872,7 @@ async function handleSubscriptionRequest(request, url, auth, env) {
     });
   } catch (error) {
     console.error('处理订阅请求失败:', error);
-    return errorResponse(`订阅处理失败: ${error.message}`, 500);
+    return errorResponse('阅处理失败: ' + error.message, 500);
   }
 }
 
@@ -912,7 +911,7 @@ function generateSubscriptionInfo() {
   const expiryTimestamp = CONFIG.subscription.defaultExpiry / 1000;  // 过期时间戳，秒
   
   // 格式: upload=已上传字节; download=已下载字节; total=总流量字节; expire=过期时间戳
-  return `upload=${uploadUsed}; download=${downloadUsed}; total=${totalBytes}; expire=${expiryTimestamp}`;
+  return 'pload=' + uploadUsed + '; download=' + downloadUsed + '; total=' + totalBytes + '; expire=' + expiryTimestamp;
 }
 
 /**
@@ -937,7 +936,7 @@ async function aggregateSubscriptions(env) {
         }
       }
     } catch (error) {
-      console.error(`获取订阅 ${key.name} 详情失败:`, error);
+      console.error('取订阅 ' + key.name + ' 详情失败:', error);
     }
   }
   
@@ -963,7 +962,7 @@ async function aggregateSubscriptions(env) {
         clearTimeout(timeoutId);
         
         if (!response.ok) {
-          throw new Error(`HTTP error: ${response.status}`);
+          throw new Error('TTP error: ' + response.status);
         }
         
         const content = await response.text();
@@ -994,7 +993,7 @@ async function aggregateSubscriptions(env) {
     if (result.status === 'fulfilled') {
       successfulContents.push(result.value);
     } else {
-      console.error(`获取订阅 ${activeSubscriptions[i].name} 内容失败:`, result.reason);
+      console.error('取订阅 ' + activeSubscriptions[i].name + ' 内容失败:', result.reason);
     }
   }
   
@@ -1093,7 +1092,7 @@ async function convertSubscription(content, targetFormat) {
   
   // 使用订阅转换API
   try {
-    const convertUrl = `https://${CONFIG.subscription.subConverter}/sub?target=${targetFormat}&url=${encodeURIComponent(btoa(content))}`;
+    const convertUrl = 'ttps://' + CONFIG.subscription.subConverter + '/sub?target=' + targetFormat + '&url=' + encodeURIComponent(btoa(content));
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CONFIG.subscription.timeout);
@@ -1108,13 +1107,13 @@ async function convertSubscription(content, targetFormat) {
     clearTimeout(timeoutId);
     
     if (!response.ok) {
-      throw new Error(`转换API返回错误: ${response.status}`);
+      throw new Error('换API返回错误: ' + response.status);
     }
     
     return await response.text();
   } catch (error) {
     console.error('转换订阅失败:', error);
-    throw new Error(`转换订阅失败: ${error.message}`);
+    throw new Error('换订阅失败: ' + error.message);
   }
 }
 
@@ -1144,12 +1143,11 @@ async function handleAssetRequest(pathname) {
   
   // 静态资源映射
   const assets = {
-    'style.css': `
-      /* 全局样式 */
+    'style.css': '      /* 全局样式 */
       :root {
-        --primary-color: ${CONFIG.ui.themeColor};
-        --primary-dark: ${CONFIG.ui.themeColor}dd;
-        --primary-light: ${CONFIG.ui.themeColor}33;
+        --primary-color: ' + CONFIG.ui.themeColor + ';
+        --primary-dark: ' + CONFIG.ui.themeColor + 'dd;
+        --primary-light: ' + CONFIG.ui.themeColor + '33;
         --text-color: #333;
         --bg-color: #f5f5f5;
         --card-color: #fff;
@@ -1359,7 +1357,7 @@ async function handleAssetRequest(pathname) {
           padding: 1rem;
         }
       }
-    `,
+    ',
     'app.js': `
       // 主应用脚本
       document.addEventListener('DOMContentLoaded', () => {
@@ -1466,7 +1464,7 @@ async function handleAssetRequest(pathname) {
       
       // 删除订阅
       async function deleteSubscription(name) {
-        if (!confirm(\`确定要删除订阅 "\${name}" 吗?\`)) {
+        if (!confirm(\'定要删除订阅 "\' + name + '" 吗?\')) {
           return;
         }
         
@@ -1515,17 +1513,16 @@ async function handleAssetRequest(pathname) {
  * 渲染登录页面
  */
 function renderLoginPage() {
-  const html = `
-  <!DOCTYPE html>
+  const html = '  <!DOCTYPE html>
   <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - ${CONFIG.ui.title}</title>
-    <link rel="icon" href="${CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>'}">
+    <title>登录 - ' + CONFIG.ui.title + '</title>
+    <link rel="icon" href="' + CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>' + '">
     <style>
       :root {
-        --primary-color: ${CONFIG.ui.themeColor};
+        --primary-color: ' + CONFIG.ui.themeColor + ';
         --bg-color: #f9f9f9;
         --text-color: #333;
         --border-color: #ddd;
@@ -1647,7 +1644,7 @@ function renderLoginPage() {
   <body>
     <div class="login-container">
       <div class="login-header">
-        <h1 class="login-title">${CONFIG.ui.title}</h1>
+        <h1 class="login-title">' + CONFIG.ui.title + '</h1>
         <p class="login-subtitle">请输入令牌访问</p>
       </div>
       
@@ -1666,7 +1663,7 @@ function renderLoginPage() {
     </div>
   </body>
   </html>
-  `;
+  ';
   
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
@@ -1679,20 +1676,19 @@ function renderLoginPage() {
 function renderDashboard(auth) {
   const isAdmin = auth.isAdmin;
   
-  const html = `
-  <!DOCTYPE html>
+  const html = '  <!DOCTYPE html>
   <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${CONFIG.ui.title} - 控制面板</title>
-    <link rel="icon" href="${CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>'}">
+    <title>' + CONFIG.ui.title + ' - 控制面板</title>
+    <link rel="icon" href="' + CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>' + '">
     <link rel="stylesheet" href="/assets/style.css">
     <script src="/assets/app.js" defer></script>
   </head>
   <body>
     <header>
-      <h1>${CONFIG.ui.title}</h1>
+      <h1>' + CONFIG.ui.title + '</h1>
     </header>
     
     <main>
@@ -1713,11 +1709,11 @@ function renderDashboard(auth) {
               <p>订阅链接（支持多种客户端格式）：</p>
             </div>
             <div>
-              <a href="/sub/clash/${CONFIG.subscription.fileName}" target="_blank" class="button">Clash</a>
-              <a href="/sub/singbox/${CONFIG.subscription.fileName}" target="_blank" class="button">SingBox</a>
-              <a href="/sub/surge/${CONFIG.subscription.fileName}" target="_blank" class="button">Surge</a>
-              <a href="/sub/quanx/${CONFIG.subscription.fileName}" target="_blank" class="button">QuantumultX</a>
-              <a href="/sub/base64/${CONFIG.subscription.fileName}" target="_blank" class="button">通用</a>
+              <a href="/sub/clash/' + CONFIG.subscription.fileName + '" target="_blank" class="button">Clash</a>
+              <a href="/sub/singbox/' + CONFIG.subscription.fileName + '" target="_blank" class="button">SingBox</a>
+              <a href="/sub/surge/' + CONFIG.subscription.fileName + '" target="_blank" class="button">Surge</a>
+              <a href="/sub/quanx/' + CONFIG.subscription.fileName + '" target="_blank" class="button">QuantumultX</a>
+              <a href="/sub/base64/' + CONFIG.subscription.fileName + '" target="_blank" class="button">通用</a>
             </div>
           </div>
           <div class="mt-4">
@@ -1735,7 +1731,7 @@ function renderDashboard(auth) {
         </div>
       </div>
       
-      ${isAdmin ? `
+      ' + 'isAdmin ? '
       <div class="card">
         <h3>添加订阅源</h3>
         <form id="add-subscription-form">
@@ -1926,7 +1922,7 @@ function renderDashboard(auth) {
           showNotification(`订阅 ${name} ${enabled ? '已启用' : '已禁用'}`, 'success');
           loadSubscriptions();
         } catch (error) {
-          showNotification(`操作失败: ${error.message}`, 'error');
+          showNotification('作失败: ' + error.message, 'error');
         }
       }
       
@@ -1935,7 +1931,7 @@ function renderDashboard(auth) {
         const btn = event.target;
         const name = btn.dataset.name;
         
-        if (!confirm(`确定要删除订阅 "${name}" 吗？`)) {
+        if (!confirm('定要删除订阅 "' + name + '" 吗？')) {
           return;
         }
         
@@ -1953,10 +1949,10 @@ function renderDashboard(auth) {
             return;
           }
           
-          showNotification(`订阅 ${name} 已删除`, 'success');
+          showNotification('阅 ' + name + ' 已删除', 'success');
           loadSubscriptions();
         } catch (error) {
-          showNotification(`删除失败: ${error.message}`, 'error');
+          showNotification('除失败: ' + error.message, 'error');
         }
       }
       
@@ -1997,7 +1993,7 @@ function renderDashboard(auth) {
             // 刷新列表
             loadSubscriptions();
           } catch (error) {
-            showNotification(`添加失败: ${error.message}`, 'error');
+            showNotification('加失败: ' + error.message, 'error');
           }
         });
       }
@@ -2027,21 +2023,20 @@ function renderDashboard(auth) {
             const data = await response.json();
             
             if (!data.success) {
-              resultContainer.innerHTML = `<div class="alert alert-error">${data.message || '测试失败'}</div>`;
+              resultContainer.innerHTML = 'div class="alert alert-error">' + data.message || '测试失败' + '</div>';
               return;
             }
             
             const details = data.details;
-            resultContainer.innerHTML = `
-              <div class="alert alert-success">
+            resultContainer.innerHTML = '              <div class="alert alert-success">
                 <h4>测试成功</h4>
-                <p>订阅类型: ${details.type || '未知'}</p>
-                <p>节点数量: ${details.nodeCount || '未知'}</p>
-                <p>文件大小: ${details.formattedSize || '未知'}</p>
+                <p>订阅类型: ' + details.type || '未知' + '</p>
+                <p>节点数量: ' + details.nodeCount || '未知' + '</p>
+                <p>文件大小: ' + details.formattedSize || '未知' + '</p>
               </div>
-            `;
+            ';
           } catch (error) {
-            resultContainer.innerHTML = `<div class="alert alert-error">测试失败: ${error.message}</div>`;
+            resultContainer.innerHTML = 'div class="alert alert-error">测试失败: ' + error.message + '</div>';
           }
         });
       }
@@ -2086,24 +2081,23 @@ async function renderSubscriptionList(env) {
           }
         }
       } catch (error) {
-        console.error(`获取订阅 ${key.name} 详情失败:`, error);
+        console.error('取订阅 ' + key.name + ' 详情失败:', error);
       }
     }
     
     // 订阅列表展示页面
-    const html = `
-    <!DOCTYPE html>
+    const html = '    <!DOCTYPE html>
     <html lang="zh-CN">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>订阅列表 - ${CONFIG.ui.title}</title>
-      <link rel="icon" href="${CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>'}">
+      <title>订阅列表 - ' + CONFIG.ui.title + '</title>
+      <link rel="icon" href="' + CONFIG.ui.favicon || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>' + '">
       <link rel="stylesheet" href="/assets/style.css">
     </head>
     <body>
       <header>
-        <h1>${CONFIG.ui.title} - 订阅列表</h1>
+        <h1>' + CONFIG.ui.title + ' - 订阅列表</h1>
       </header>
       
       <main>
@@ -2128,7 +2122,7 @@ async function renderSubscriptionList(env) {
         
         <div class="card">
           <h3>可用订阅列表</h3>
-          ${subscriptions.length > 0 ? `
+          ' + 'subscriptions.length > 0 ? '
             <table class="table mt-4">
               <thead>
                 <tr>
@@ -2139,30 +2133,29 @@ async function renderSubscriptionList(env) {
                 </tr>
               </thead>
               <tbody>
-                ${subscriptions.map(sub => `
-                  <tr>
-                    <td>${sub.name}</td>
-                    <td>${sub.remark || '-'}</td>
+                ${subscriptions.map(sub => '                  <tr>
+                    <td>' + sub.name + '</td>
+                    <td>' + sub.remark || '-' + '</td>
                     <td>
-                      <span class="tag ${sub.lastStatus === 'success' ? 'tag-success' : 'tag-error'}">
-                        ${sub.lastStatus === 'success' ? '正常' : '失败'}
+                      <span class="tag ' + sub.lastStatus === 'success' ? 'tag-success' : 'tag-error' + '">
+                        ' + sub.lastStatus === 'success' ? '正常' : '失败' + '
                       </span>
                     </td>
-                    <td>${sub.lastUpdated ? new Date(sub.lastUpdated).toLocaleString() : '从未'}</td>
+                    <td>' + sub.lastUpdated ? new Date(sub.lastUpdated).toLocaleString() : '从未' + '</td>
                   </tr>
-                `).join('')}
+                ').join('')}
               </tbody>
             </table>
-          ` : '<div class="alert">暂无可用订阅</div>'}
+          ': '<div class="alert">暂无可用订阅</div>'}
         </div>
       </main>
       
       <footer>
-        <p>© ${new Date().getFullYear()} ${CONFIG.ui.title} | Powered by Cloudflare Workers</p>
+        <p>© ' + new Date().getFullYear() + ' ' + CONFIG.ui.title + ' | Powered by Cloudflare Workers</p>
       </footer>
     </body>
     </html>
-    `;
+    ';
     
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' }
@@ -2195,7 +2188,7 @@ async function handleApiListSubscriptions(env) {
           });
         }
       } catch (error) {
-        console.error(`获取订阅 ${key.name} 详情失败:`, error);
+        console.error('取订阅 ' + key.name + ' 详情失败:', error);
       }
     }
     
@@ -2370,7 +2363,7 @@ async function handleApiTestSubscription(request) {
     
     if (!response.ok) {
       return jsonResponse({ 
-        error: `获取订阅失败: HTTP ${response.status} ${response.statusText}` 
+        error: '取订阅失败: HTTP ' + response.status + ' ' + response.statusText 
       }, 400);
     }
     
@@ -2411,11 +2404,11 @@ async function handleApiTestSubscription(request) {
     let formattedSize;
     
     if (bytes < 1024) {
-      formattedSize = `${bytes} B`;
+      formattedSize = '{bytes} B';
     } else if (bytes < 1024 * 1024) {
-      formattedSize = `${(bytes / 1024).toFixed(2)} KB`;
+      formattedSize = '{(bytes / 1024).toFixed(2)} KB';
     } else {
-      formattedSize = `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+      formattedSize = '{(bytes / (1024 * 1024)).toFixed(2)} MB';
     }
     
     return jsonResponse({
@@ -2430,7 +2423,7 @@ async function handleApiTestSubscription(request) {
     });
   } catch (error) {
     return jsonResponse({ 
-      error: `测试订阅失败: ${error.message}` 
+      error: '试订阅失败: ' + error.message 
     }, 500);
   }
 }
@@ -2579,7 +2572,7 @@ async function handleLoginRequest(request, env) {
     // 创建加密的token
     const token = await generateAuthToken(password, isAdmin, env);
     
-    response.headers.set('Set-Cookie', `token=${token}; Path=/; Expires=${expiryDate.toUTCString()}; HttpOnly; SameSite=Strict`);
+    response.headers.set('Set-Cookie', 'oken=' + token + '; Path=/; Expires=' + expiryDate.toUTCString() + '; HttpOnly; SameSite=Strict');
     
     return response;
   } catch (error) {
@@ -2706,7 +2699,7 @@ export default {
       return await handleRequest(request, env, ctx);
     } catch (error) {
       console.error('未处理的错误:', error);
-      return new Response(`服务器内部错误: ${error.message}`, { status: 500 });
+      return new Response('务器内部错误: ' + error.message, { status: 500 });
     }
   }
 };
