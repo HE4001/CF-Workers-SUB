@@ -1502,7 +1502,7 @@ async function handleAssetRequest(pathname) {
         }
       }
     `
-
+  };
 
   // 返回请求的资源内容
   if (assets[assetPath]) {
