@@ -1681,7 +1681,7 @@ function renderLoginPage() {
 function renderDashboard(auth) {
   const isAdmin = auth.isAdmin;
   
-  const html = '  <!DOCTYPE html>
+  const html = `  <!DOCTYPE html>
   <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
