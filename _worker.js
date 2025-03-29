@@ -1834,7 +1834,7 @@ function renderDashboard(auth) {
       function showNotification(message, type = 'info') {
         const container = document.getElementById('notification-container');
         const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
+        notification.className = 'notification ' + type;
         notification.textContent = message;
         
         container.appendChild(notification);
