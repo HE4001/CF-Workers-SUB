@@ -1147,11 +1147,11 @@ async function handleAssetRequest(pathname) {
   
   // 静态资源映射
   const assets = {
-    'style.css': '      /* 全局样式 */
+        'style.css': `      /* 全局样式 */
       :root {
-        --primary-color: ' + CONFIG.ui.themeColor + ';
-        --primary-dark: ' + CONFIG.ui.themeColor + 'dd;
-        --primary-light: ' + CONFIG.ui.themeColor + '33;
+        --primary-color: ${CONFIG.ui.themeColor};
+        --primary-dark: ${CONFIG.ui.themeColor}dd;
+        --primary-light: ${CONFIG.ui.themeColor}33;
         --text-color: #333;
         --bg-color: #f5f5f5;
         --card-color: #fff;
@@ -1361,8 +1361,9 @@ async function handleAssetRequest(pathname) {
           padding: 1rem;
         }
       }
-    ',
-    'app.js': `
+    `,
+
+        'app.js': `
       // 主应用脚本
       document.addEventListener('DOMContentLoaded', () => {
         // 初始化应用
@@ -1468,7 +1469,7 @@ async function handleAssetRequest(pathname) {
       
       // 删除订阅
       async function deleteSubscription(name) {
-        if (!confirm(\'定要删除订阅 "\' + name + '" 吗?\')) {
+        if (!confirm('定要删除订阅 "' + name + '" 吗?')) {
           return;
         }
         
@@ -1501,7 +1502,7 @@ async function handleAssetRequest(pathname) {
         }
       }
     `
-  };
+
 
   // 返回请求的资源内容
   if (assets[assetPath]) {
