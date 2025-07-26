@@ -1,860 +1,1417 @@
-// CF-Workers-SUB - 重构版本
-// 增强安全性，保持原有功能，移除Telegram相关功能
-
-// 配置管理
-class Config {
-    constructor(env = {}) {
-        this.token = env.TOKEN || 'auto';
-        this.guestToken = env.GUESTTOKEN || env.GUEST || '';
-        this.fileName = env.SUBNAME || 'CF-Workers-SUB';
-        this.updateInterval = parseInt(env.SUBUPTIME) || 6;
-        this.subConverter = env.SUBAPI || 'SUBAPI.cmliussss.net';
-        this.subConfig = env.SUBCONFIG || 'https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini';
-        this.mainData = env.LINK || 'https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray';
-        this.linkSub = env.LINKSUB || '';
-        this.url302 = env.URL302 || '';
-        this.proxyUrl = env.URL || '';
-        this.warpNodes = env.WARP || '';
-        
-        // 处理协议
-        this.subProtocol = this.subConverter.includes('http://') ? 'http' : 'https';
-        this.subConverter = this.subConverter.replace(/^https?:\/\//, '');
-        
-        // 安全常量
-        this.TOTAL_BYTES = 99 * 1099511627776; // 99TB
-        this.EXPIRE_TIMESTAMP = 4102329600000; // 2099-12-31
-        this.REQUEST_TIMEOUT = 3000;
-        this.MAX_CONTENT_SIZE = 10 * 1024 * 1024; // 10MB
-        this.CACHE_TTL = 300000; // 5分钟
-    }
-}
-
-// 安全工具类
-class SecurityUtils {
-    static async doubleMD5(text) {
-        const encoder = new TextEncoder();
-        const firstHash = await crypto.subtle.digest('MD5', encoder.encode(text));
-        const firstArray = Array.from(new Uint8Array(firstHash));
-        const firstHex = firstArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        const secondHash = await crypto.subtle.digest('MD5', encoder.encode(firstHex.slice(7, 27)));
-        const secondArray = Array.from(new Uint8Array(secondHash));
-        const secondHex = secondArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        return secondHex.toLowerCase();
-    }
-
-    static sanitizeInput(input) {
-        if (typeof input !== 'string') return '';
-        return input
-            .replace(/[<>\"'&]/g, (char) => {
-                const entities = { '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;', '&': '&amp;' };
-                return entities[char] || char;
-            })
-            .slice(0, 1000);
-    }
-
-    static validateRequest(request) {
-        // 基础请求验证
-        const url = new URL(request.url);
-        const userAgent = request.headers.get('User-Agent') || '';
-        
-        // 防止恶意请求
-        if (userAgent.length > 500) return false;
-        if (url.pathname.length > 200) return false;
-        
-        return true;
-    }
-
-    static validateCSRF(request) {
-        if (request.method === 'GET') return true;
-        
-        const referer = request.headers.get('Referer');
-        const origin = request.headers.get('Origin');
-        const host = request.headers.get('Host');
-        
-        if (!referer && !origin) return false;
-        
-        const referDomain = referer ? new URL(referer).hostname : null;
-        const originDomain = origin ? new URL(origin).hostname : null;
-        
-        return referDomain === host || originDomain === host;
-    }
-}
-
-// 验证工具类
-class ValidationUtils {
-    static isValidBase64(str) {
-        if (!str || typeof str !== 'string') return false;
-        const cleanStr = str.replace(/\s/g, '');
-        const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
-        return base64Regex.test(cleanStr) && cleanStr.length % 4 === 0;
-    }
-
-    static isValidUrl(str) {
-        try {
-            const url = new URL(str);
-            return ['http:', 'https:'].includes(url.protocol);
-        } catch {
-            return false;
-        }
-    }
-
-    static validateContent(content) {
-        if (!content || typeof content !== 'string') {
-            return { isValid: false, error: 'Content is empty or invalid' };
-        }
-        if (content.length > 10 * 1024 * 1024) {
-            return { isValid: false, error: 'Content too large' };
-        }
-        return { isValid: true };
-    }
-}
-
-// 缓存管理
-class CacheManager {
-    constructor() {
-        this.cache = new Map();
-        this.defaultTTL = 300000; // 5分钟
-    }
-
-    set(key, value, ttl = null) {
-        const expires = Date.now() + (ttl || this.defaultTTL);
-        this.cache.set(key, { value, expires });
-    }
-
-    get(key) {
-        const item = this.cache.get(key);
-        if (!item || Date.now() > item.expires) {
-            this.cache.delete(key);
-            return null;
-        }
-        return item.value;
-    }
-
-    cleanup() {
-        const now = Date.now();
-        for (const [key, item] of this.cache.entries()) {
-            if (now > item.expires) {
-                this.cache.delete(key);
-            }
-        }
-    }
-}
-
-// 订阅处理类
-class SubscriptionProcessor {
-    constructor(config, cache) {
-        this.config = config;
-        this.cache = cache;
-    }
-
-    async processData(data) {
-        if (!data) return [];
-        
-        return data
-            .replace(/[\t"'|\r\n]+/g, '\n')
-            .replace(/\n+/g, '\n')
-            .trim()
-            .split('\n')
-            .filter(line => line.trim())
-            .filter(line => line.length < 2000); // 防止超长行
-    }
-
-    async fetchSubscriptions(urls, request, userAgent) {
-        if (!urls || urls.length === 0) return { content: [], convertUrls: '' };
-
-        const uniqueUrls = [...new Set(urls)]
-            .filter(url => url?.trim?.())
-            .filter(url => ValidationUtils.isValidUrl(url))
-            .slice(0, 50); // 限制最大订阅数量
-
-        const cacheKey = `sub_${this.hashUrls(uniqueUrls)}`;
-        const cached = this.cache.get(cacheKey);
-        if (cached) return cached;
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.config.REQUEST_TIMEOUT);
-
-        try {
-            const promises = uniqueUrls.map(url => this.fetchSingleSubscription(url, request, userAgent, controller.signal));
-            const results = await Promise.allSettled(promises);
-            const processed = await this.processResults(results, uniqueUrls);
-            
-            this.cache.set(cacheKey, processed, 180000); // 3分钟缓存
-            return processed;
-        } finally {
-            clearTimeout(timeout);
-        }
-    }
-
-    async fetchSingleSubscription(url, request, userAgent, signal) {
-        const headers = new Headers();
-        headers.set('User-Agent', `v2rayN/6.45 CF-Workers-SUB/2.0 (${userAgent})`);
-        headers.set('Accept', 'text/plain,text/html,application/json');
-
-        const response = await fetch(url, {
-            method: 'GET',
-            headers,
-            signal,
-            cf: { timeout: this.config.REQUEST_TIMEOUT }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const content = await response.text();
-        if (content.length > this.config.MAX_CONTENT_SIZE) {
-            throw new Error('Content too large');
-        }
-
-        return { url, content, status: 'success' };
-    }
-
-    async processResults(results, urls) {
-        let content = [];
-        let convertUrls = '';
-
-        for (let i = 0; i < results.length; i++) {
-            const result = results[i];
-            const url = urls[i];
-
-            if (result.status === 'fulfilled') {
-                const data = result.value.content;
-                
-                if (this.isClashConfig(data)) {
-                    convertUrls += `|${url}`;
-                } else if (this.isSingboxConfig(data)) {
-                    convertUrls += `|${url}`;
-                } else if (ValidationUtils.isValidBase64(data.replace(/\s/g, ''))) {
-                    try {
-                        const decoded = this.decodeBase64(data);
-                        content.push(...await this.processData(decoded));
-                    } catch (e) {
-                        console.warn('Base64 decode failed:', url);
-                    }
-                } else if (this.isPlainTextNodes(data)) {
-                    content.push(...await this.processData(data));
-                }
-            }
-        }
-
-        return { content, convertUrls };
-    }
-
-    isClashConfig(content) {
-        return content.includes('proxies:');
-    }
-
-    isSingboxConfig(content) {
-        return content.includes('"outbounds"') && content.includes('"inbounds"');
-    }
-
-    isPlainTextNodes(content) {
-        return /^[a-z0-9+/]+:\/\//im.test(content);
-    }
-
-    decodeBase64(str) {
-        try {
-            return atob(str.replace(/\s/g, ''));
-        } catch (e) {
-            // 兜底解码
-            const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
-            return new TextDecoder('utf-8').decode(bytes);
-        }
-    }
-
-    hashUrls(urls) {
-        return btoa(urls.join('|')).slice(0, 16);
-    }
-}
-
-// 格式转换类
-class FormatConverter {
-    constructor(config) {
-        this.config = config;
-    }
-
-    detectFormat(userAgent, searchParams) {
-        // URL参数优先
-        if (searchParams.has('base64') || searchParams.has('b64')) return 'base64';
-        if (searchParams.has('clash')) return 'clash';
-        if (searchParams.has('singbox') || searchParams.has('sb')) return 'singbox';
-        if (searchParams.has('surge')) return 'surge';
-        if (searchParams.has('quanx')) return 'quanx';
-        if (searchParams.has('loon')) return 'loon';
-
-        // User-Agent检测
-        const ua = userAgent.toLowerCase();
-        if (ua.includes('sing-box') || ua.includes('singbox')) return 'singbox';
-        if (ua.includes('surge')) return 'surge';
-        if (ua.includes('quantumult')) return 'quanx';
-        if (ua.includes('loon')) return 'loon';
-        if (ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')) return 'clash';
-
-        return 'base64';
-    }
-
-    async convert(content, format, subscriptionUrl) {
-        if (format === 'base64') {
-            return this.encodeBase64(content);
-        }
-
-        const converterUrl = this.buildConverterUrl(format, subscriptionUrl);
-        if (!converterUrl) return this.encodeBase64(content);
-
-        try {
-            const response = await fetch(converterUrl, {
-                cf: { timeout: 10000 }
-            });
-
-            if (!response.ok) throw new Error(`Converter error: ${response.status}`);
-
-            let result = await response.text();
-            if (format === 'clash') {
-                result = this.fixClashConfig(result);
-            }
-            
-            return result;
-        } catch (error) {
-            console.warn('Conversion failed, fallback to base64:', error.message);
-            return this.encodeBase64(content);
-        }
-    }
-
-    buildConverterUrl(format, subscriptionUrl) {
-        const baseUrl = `${this.config.subProtocol}://${this.config.subConverter}/sub`;
-        const params = new URLSearchParams({
-            url: subscriptionUrl,
-            insert: 'false',
-            config: this.config.subConfig,
-            emoji: 'true',
-            list: 'false',
-            tfo: 'false',
-            scv: 'true',
-            fdn: 'false',
-            sort: 'false',
-            new_name: 'true'
-        });
-
-        const targets = {
-            clash: 'clash',
-            singbox: 'singbox',
-            surge: 'surge',
-            quanx: 'quanx',
-            loon: 'loon'
-        };
-
-        if (!targets[format]) return null;
-        
-        params.set('target', targets[format]);
-        if (format === 'surge') params.set('ver', '4');
-        if (format === 'quanx') params.set('udp', 'true');
-
-        return `${baseUrl}?${params.toString()}`;
-    }
-
-    encodeBase64(content) {
-        try {
-            return btoa(unescape(encodeURIComponent(content)));
-        } catch (e) {
-            // 兜底编码
-            const encoder = new TextEncoder();
-            const bytes = encoder.encode(content);
-            let result = '';
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-            
-            for (let i = 0; i < bytes.length; i += 3) {
-                const a = bytes[i] || 0;
-                const b = bytes[i + 1] || 0;
-                const c = bytes[i + 2] || 0;
-                
-                result += chars[a >> 2];
-                result += chars[((a & 3) << 4) | (b >> 4)];
-                result += chars[((b & 15) << 2) | (c >> 6)];
-                result += chars[c & 63];
-            }
-            
-            const padding = (3 - (bytes.length % 3)) % 3;
-            return result.slice(0, result.length - padding) + '='.repeat(padding);
-        }
-    }
-
-    fixClashConfig(content) {
-        return content.replace(
-            /, mtu: 1280, udp: true/g,
-            ', mtu: 1280, remote-dns-resolve: true, udp: true'
-        );
-    }
-}
-
-// KV存储处理
-class StorageHandler {
-    constructor(config) {
-        this.config = config;
-    }
-
-    async handleKVRequest(request, env, guestToken) {
-        const url = new URL(request.url);
-        
-        if (request.method === 'POST') {
-            return await this.handleSave(request, env);
-        }
-        
-        const content = await this.loadContent(env);
-        const html = this.generateEditorHTML(url, content, guestToken, !!env.KV, request.headers.get('User-Agent'));
-        
-        return new Response(html, {
-            headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        });
-    }
-
-    async handleSave(request, env) {
-        if (!env.KV) {
-            return new Response('KV namespace not bound', { status: 400 });
-        }
-
-        if (!SecurityUtils.validateCSRF(request)) {
-            return new Response('CSRF validation failed', { status: 403 });
-        }
-
-        try {
-            const content = await request.text();
-            const validation = ValidationUtils.validateContent(content);
-            
-            if (!validation.isValid) {
-                return new Response(validation.error, { status: 400 });
-            }
-
-            await env.KV.put('LINK.txt', content);
-            return new Response('保存成功');
-        } catch (error) {
-            console.error('Save error:', error);
-            return new Response(`保存失败: ${error.message}`, { status: 500 });
-        }
-    }
-
-    async loadContent(env) {
-        if (!env.KV) return '';
-        
-        try {
-            return await env.KV.get('LINK.txt') || '';
-        } catch (error) {
-            console.error('Load error:', error);
-            return `读取数据时发生错误: ${error.message}`;
-        }
-    }
-
-    generateEditorHTML(url, content, guestToken, hasKV, userAgent) {
-        const safeName = SecurityUtils.sanitizeInput(this.config.fileName);
-        const safeToken = SecurityUtils.sanitizeInput(this.config.token);
-        const safeGuest = SecurityUtils.sanitizeInput(guestToken);
-        
-        return `<!DOCTYPE html>
-<html>
-<head>
-    <title>${safeName} 订阅编辑</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="csrf-token" content="${safeToken}">
-    <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }
-        .header h1 { margin: 0; font-size: 2em; }
-        .content { padding: 30px; }
-        .subscription-links { margin-bottom: 30px; }
-        .link-group { margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #007bff; }
-        .link-group h3 { margin: 0 0 10px 0; color: #007bff; font-size: 1.1em; }
-        .subscription-link { display: block; color: #007bff; text-decoration: none; padding: 8px 12px; background: white; border-radius: 4px; margin: 5px 0; border: 1px solid #dee2e6; transition: all 0.2s; }
-        .subscription-link:hover { background: #e3f2fd; border-color: #007bff; }
-        .qr-container { margin: 10px 0; min-height: 100px; }
-        .editor-section { margin-top: 30px; padding-top: 30px; border-top: 2px solid #dee2e6; }
-        .editor { width: 100%; height: 400px; padding: 15px; border: 2px solid #dee2e6; border-radius: 6px; font-family: 'Monaco', 'Menlo', monospace; font-size: 13px; line-height: 1.5; resize: vertical; }
-        .editor:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 3px rgba(0,123,255,0.25); }
-        .button-group { margin-top: 15px; display: flex; gap: 10px; align-items: center; }
-        .btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
-        .btn-primary { background: #007bff; color: white; }
-        .btn-primary:hover { background: #0056b3; }
-        .btn-secondary { background: #6c757d; color: white; }
-        .btn-secondary:hover { background: #545b62; }
-        .status { margin-left: 10px; font-size: 14px; color: #666; }
-        .toggle-section { margin: 20px 0; }
-        .toggle-btn { background: none; border: none; color: #007bff; cursor: pointer; font-size: 16px; text-decoration: underline; }
-        .toggle-content { margin-top: 15px; }
-        .config-info { background: #e7f3ff; padding: 15px; border-radius: 6px; margin: 20px 0; }
-        .config-info h4 { margin: 0 0 10px 0; color: #0066cc; }
-        .hidden { display: none; }
-        @media (max-width: 768px) {
-            body { padding: 10px; }
-            .content { padding: 20px; }
-            .header { padding: 20px; }
-            .header h1 { font-size: 1.5em; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 ${safeName}</h1>
-            <p>订阅聚合管理面板</p>
-        </div>
-        
-        <div class="content">
-            <div class="subscription-links">
-                <h2>📡 订阅地址</h2>
-                
-                <div class="link-group">
-                    <h3>管理员订阅</h3>
-                    <a href="javascript:void(0)" onclick="copyAndQR('https://${url.hostname}/${safeToken}','qr_admin_0')" class="subscription-link">
-                        🔄 自适应: https://${url.hostname}/${safeToken}
-                    </a>
-                    <div id="qr_admin_0" class="qr-container"></div>
-                    
-                    <a href="javascript:void(0)" onclick="copyAndQR('https://${url.hostname}/${safeToken}?b64','qr_admin_1')" class="subscription-link">
-                        📝 Base64: https://${url.hostname}/${safeToken}?b64
-                    </a>
-                    <div id="qr_admin_1" class="qr-container"></div>
-                    
-                    <a href="javascript:void(0)" onclick="copyAndQR('https://${url.hostname}/${safeToken}?clash','qr_admin_2')" class="subscription-link">
-                        ⚡ Clash: https://${url.hostname}/${safeToken}?clash
-                    </a>
-                    <div id="qr_admin_2" class="qr-container"></div>
-                </div>
-
-                <div class="toggle-section">
-                    <button class="toggle-btn" onclick="toggleGuest()">🔓 查看访客订阅</button>
-                    <div id="guestSection" class="toggle-content hidden">
-                        <div class="link-group">
-                            <h3>访客订阅 (只读)</h3>
-                            <p><strong>访客TOKEN:</strong> ${safeGuest}</p>
-                            
-                            <a href="javascript:void(0)" onclick="copyAndQR('https://${url.hostname}/sub?token=${safeGuest}','qr_guest_0')" class="subscription-link">
-                                🔄 自适应: https://${url.hostname}/sub?token=${safeGuest}
-                            </a>
-                            <div id="qr_guest_0" class="qr-container"></div>
-                            
-                            <a href="javascript:void(0)" onclick="copyAndQR('https://${url.hostname}/sub?token=${safeGuest}&b64','qr_guest_1')" class="subscription-link">
-                                📝 Base64: https://${url.hostname}/sub?token=${safeGuest}&b64
-                            </a>
-                            <div id="qr_guest_1" class="qr-container"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="config-info">
-                <h4>⚙️ 当前配置</h4>
-                <p><strong>转换后端:</strong> ${this.config.subProtocol}://${this.config.subConverter}</p>
-                <p><strong>配置文件:</strong> ${this.config.subConfig}</p>
-                <p><strong>更新间隔:</strong> ${this.config.updateInterval} 小时</p>
-            </div>
-
-            ${hasKV ? `
-            <div class="editor-section">
-                <h3>📝 订阅内容编辑</h3>
-                <textarea class="editor" id="content" placeholder="请输入订阅链接或节点信息，每行一个...">${SecurityUtils.sanitizeInput(content)}</textarea>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="saveContent(this)">💾 保存</button>
-                    <span class="status" id="saveStatus"></span>
-                </div>
-            </div>
-            ` : '<div class="config-info"><p>⚠️ 请绑定 KV 命名空间以启用编辑功能</p></div>'}
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-    <script>
-        function copyAndQR(text, containerId) {
-            navigator.clipboard.writeText(text).then(() => {
-                alert('✅ 已复制到剪贴板');
-            }).catch(() => {
-                // 兜底复制方案
-                const textArea = document.createElement('textarea');
-                textArea.value = text;
-                document.body.appendChild(textArea);
-                textArea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textArea);
-                alert('✅ 已复制到剪贴板');
-            });
-
-            const container = document.getElementById(containerId);
-            if (container && window.QRCode) {
-                container.innerHTML = '';
-                QRCode.toCanvas(container, text, {
-                    width: 200,
-                    margin: 2,
-                    color: { dark: '#000000', light: '#ffffff' }
-                }, (error) => {
-                    if (error) console.error('QR生成失败:', error);
-                });
-            }
-        }
-
-        function toggleGuest() {
-            const section = document.getElementById('guestSection');
-            const btn = event.target;
-            if (section.classList.contains('hidden')) {
-                section.classList.remove('hidden');
-                btn.textContent = '🔒 隐藏访客订阅';
-            } else {
-                section.classList.add('hidden');
-                btn.textContent = '🔓 查看访客订阅';
-            }
-        }
-
-        ${hasKV ? `
-        async function saveContent(button) {
-            const textarea = document.getElementById('content');
-            const status = document.getElementById('saveStatus');
-            const originalText = button.textContent;
-            
-            try {
-                button.disabled = true;
-                button.textContent = '⏳ 保存中...';
-                status.textContent = '';
-                
-                const response = await fetch(window.location.href, {
-                    method: 'POST',
-                    body: textarea.value,
-                    headers: {
-                        'Content-Type': 'text/plain;charset=UTF-8',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    }
-                });
-                
-                if (response.ok) {
-                    const now = new Date().toLocaleString();
-                    status.textContent = \`✅ 保存成功 \${now}\`;
-                    status.style.color = '#28a745';
-                } else {
-                    const error = await response.text();
-                    status.textContent = \`❌ 保存失败: \${error}\`;
-                    status.style.color = '#dc3545';
-                }
-            } catch (error) {
-                status.textContent = \`❌ 网络错误: \${error.message}\`;
-                status.style.color = '#dc3545';
-            } finally {
-                button.disabled = false;
-                button.textContent = originalText;
-            }
-        }
-
-        // 自动保存
-        let saveTimer;
-        const textarea = document.getElementById('content');
-        if (textarea) {
-            textarea.addEventListener('input', () => {
-                clearTimeout(saveTimer);
-                saveTimer = setTimeout(() => {
-                    const saveBtn = document.querySelector('.btn-primary');
-                    if (saveBtn) saveContent(saveBtn);
-                }, 3000);
-            });
-        }
-        ` : ''}
-    </script>
-</body>
-</html>`;
-    }
-}
-
-// 主处理器
-export default {
-    async fetch(request, env, ctx) {
-        // 基础安全检查
-        if (!SecurityUtils.validateRequest(request)) {
-            return new Response('Bad Request', { status: 400 });
-        }
-
-        const config = new Config(env);
-        const cache = new CacheManager();
-        const processor = new SubscriptionProcessor(config, cache);
-        const converter = new FormatConverter(config);
-        const storage = new StorageHandler(config);
-
-        // 定期清理缓存
-        ctx.waitUntil(cache.cleanup());
-
-        try {
-            const url = new URL(request.url);
-            const userAgent = request.headers.get('User-Agent') || '';
-            
-            // 生成令牌
-            const currentDate = new Date();
-            currentDate.setHours(0, 0, 0, 0);
-            const timeTemp = Math.ceil(currentDate.getTime() / 1000);
-            const fakeToken = await SecurityUtils.doubleMD5(`${config.token}${timeTemp}`);
-            const guestToken = config.guestToken || await SecurityUtils.doubleMD5(config.token);
-
-            // 验证访问权限
-            const token = url.searchParams.get('token');
-            const validTokens = [config.token, fakeToken, guestToken];
-            const validPaths = [
-                `/${config.token}`,
-                `/${config.token}?`
-            ];
-
-            const hasValidToken = validTokens.includes(token);
-            const hasValidPath = validPaths.some(path => 
-                url.pathname === path || url.pathname.startsWith(path)
-            );
-
-            if (!hasValidToken && !hasValidPath) {
-                // 未授权访问处理
-                if (config.url302) {
-                    return Response.redirect(config.url302, 302);
-                }
-                
-                if (config.proxyUrl) {
-                    return await this.handleProxy(config.proxyUrl, request);
-                }
-
-                return new Response(this.getDefaultHTML(), {
-                    status: 200,
-                    headers: { 'Content-Type': 'text/html; charset=UTF-8' }
-                });
-            }
-
-            // 已授权访问处理
-            if (userAgent.toLowerCase().includes('mozilla') && !url.search) {
-                // Web界面请求
-                return await storage.handleKVRequest(request, env, guestToken);
-            }
-
-            // API请求处理
-            return await this.handleAPIRequest(request, env, config, processor, converter, userAgent, fakeToken);
-
-        } catch (error) {
-            console.error('处理请求时发生错误:', error);
-            return new Response('服务暂时不可用', { 
-                status: 503,
-                headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-            });
-        }
-    },
-
-    async handleAPIRequest(request, env, config, processor, converter, userAgent, fakeToken) {
-        // 获取主要数据
-        let mainData = [];
-        if (env.KV) {
-            const stored = await env.KV.get('LINK.txt');
-            if (stored) {
-                mainData = await processor.processData(stored);
-            }
-        } else {
-            mainData = await processor.processData(config.mainData);
-        }
-
-        // 分离自建节点和订阅链接
-        const selfNodes = [];
-        const subscriptionUrls = [];
-        
-        mainData.forEach(line => {
-            if (line.toLowerCase().startsWith('http')) {
-                subscriptionUrls.push(line);
-            } else {
-                selfNodes.push(line);
-            }
-        });
-
-        // 添加额外订阅链接
-        if (config.linkSub) {
-            const extraUrls = await processor.processData(config.linkSub);
-            subscriptionUrls.push(...extraUrls.filter(url => ValidationUtils.isValidUrl(url)));
-        }
-
-        // 处理订阅
-        const subscriptionResult = await processor.fetchSubscriptions(subscriptionUrls, request, userAgent);
-        
-        // 合并所有内容
-        const allContent = [
-            ...selfNodes,
-            ...subscriptionResult.content
-        ].filter(Boolean);
-
-        // 去重
-        const uniqueContent = [...new Set(allContent)];
-        const finalContent = uniqueContent.join('\n');
-
-        // 检测格式并转换
-        const url = new URL(request.url);
-        const format = converter.detectFormat(userAgent, url.searchParams);
-        
-        const subscriptionUrl = `${url.origin}/${fakeToken}?token=${fakeToken}${subscriptionResult.convertUrls}`;
-        const result = await converter.convert(finalContent, format, subscriptionUrl);
-
-        // 构建响应头
-        const headers = {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Profile-Update-Interval': `${config.updateInterval}`,
-            'Profile-web-page-url': request.url.split('?')[0],
-            'Cache-Control': 'public, max-age=300',
-            'X-Content-Type-Options': 'nosniff'
-        };
-
-        if (!userAgent.toLowerCase().includes('mozilla')) {
-            headers['Content-Disposition'] = `attachment; filename*=utf-8''${encodeURIComponent(config.fileName)}`;
-        }
-
-        return new Response(result, { headers });
-    },
-
-    async handleProxy(proxyUrl, request) {
-        try {
-            const urls = proxyUrl.split('\n').filter(Boolean);
-            const targetUrl = urls[Math.floor(Math.random() * urls.length)];
-            
-            const url = new URL(request.url);
-            const proxyURL = new URL(targetUrl);
-            
-            const newUrl = `${proxyURL.protocol}//${proxyURL.hostname}${proxyURL.pathname}${url.pathname}${url.search}`;
-            
-            const response = await fetch(newUrl, {
-                method: request.method,
-                headers: request.headers,
-                body: request.method === 'GET' ? null : request.body
-            });
-
-            return new Response(response.body, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers
-            });
-        } catch (error) {
-            return new Response('代理请求失败', { status: 502 });
-        }
-    },
-
-    getDefaultHTML() {
-        return `<!DOCTYPE html>
-<html>
-<head>
-    <title>CF Workers SUB</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); text-align: center; max-width: 500px; }
-        .logo { font-size: 4em; margin-bottom: 20px; }
-        h1 { color: #333; margin: 20px 0; }
-        p { color: #666; line-height: 1.6; }
-        .status { background: #e8f5e8; color: #2d5a2d; padding: 15px; border-radius: 5px; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="logo">🚀</div>
-        <h1>CF Workers SUB</h1>
-        <div class="status">
-            <strong>✅ 服务运行正常</strong>
-        </div>
-        <p>这是一个订阅聚合服务。请使用正确的访问令牌来查看订阅内容。</p>
-        <p><small>Powered by Cloudflare Workers</small></p>
-    </div>
-</body>
-</html>`;
-    }
+/**
+ * CF Workers SUB - 完整优化版本
+ * 环境变量：TOKEN (管理员令牌), LINK (默认订阅链接)
+ * KV存储：配置、缓存、统计、日志等所有其他数据
+ * 基于 Cloudflare Workers KV 最佳实践设计
+ */
+
+// KV 存储键名常量
+const KV_KEYS = {
+  // 核心配置
+  APP_CONFIG: 'app_config',
+  USER_LINKS: 'user_links',
+  
+  // 缓存数据
+  PROCESSED_NODES: 'processed_nodes',
+  SUBSCRIPTION_CACHE: 'sub_cache',
+  
+  // 统计数据
+  ACCESS_STATS: 'access_stats',
+  SYSTEM_LOGS: 'system_logs',
+  
+  // 认证相关
+  AUTH_CONFIG: 'auth_config',
+  
+  // 转换缓存前缀
+  CACHE_PREFIX: 'cache_',
+  CONVERT_PREFIX: 'convert_'
 };
+
+// 默认配置
+const DEFAULT_CONFIG = {
+  subName: 'CF-Workers-SUB',
+  subUptime: 6,
+  subApi: 'SUBAPI.cmliussss.net',
+  subConfig: 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini',
+  guestToken: '',
+  url302: '',
+  url: '',
+  tgToken: '',
+  tgId: '',
+  enableCache: true,
+  enableStats: true,
+  enableLogs: true,
+  theme: 'auto',
+  language: 'zh-CN',
+  maxNodes: 500,
+  enableDedup: true,
+  sortBySpeed: false
+};
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      const router = new Router(env);
+      return await router.handle(request, ctx);
+    } catch (error) {
+      console.error('Worker error:', error);
+      await logError(env, error, request);
+      return new Response('Internal Server Error', { status: 500 });
+    }
+  }
+};
+
+/**
+ * 主路由处理器
+ */
+class Router {
+  constructor(env) {
+    this.env = env;
+    this.config = new ConfigManager(env);
+    this.auth = new AuthManager(env);
+    this.subscription = new SubscriptionManager(env);
+    this.stats = new StatsManager(env);
+  }
+
+  async handle(request, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // 健康检查
+    if (path === '/health') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        timestamp: Date.now(),
+        version: '2.0.0'
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // CORS 处理
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        }
+      });
+    }
+
+    // 获取认证状态
+    const authResult = await this.auth.authenticate(request);
+    
+    // 路由分发
+    switch (true) {
+      case path === '/' || path === '/dashboard':
+        return this.handleRoot(request, authResult);
+      
+      case path === '/admin':
+        return this.handleAdmin(request, authResult);
+        
+      case path.startsWith('/api/'):
+        return this.handleAPI(request, authResult);
+        
+      case path.startsWith('/sub') || path.startsWith('/subscription'):
+        return this.handleSubscription(request, authResult, ctx);
+        
+      default:
+        return this.handleNotFound(authResult);
+    }
+  }
+
+  async handleRoot(request, authResult) {
+    if (!authResult.isAuthenticated) {
+      const config = await this.config.get();
+      if (config.url302) {
+        return Response.redirect(config.url302, 302);
+      }
+      return new Response('Unauthorized - Please provide valid token', { status: 401 });
+    }
+    
+    return new Response('CF Workers SUB - Dashboard', { status: 200 });
+  }
+
+  async handleAdmin(request, authResult) {
+    if (!authResult.isAdmin) {
+      return new Response('Admin access required', { status: 403 });
+    }
+    
+    return new Response('CF Workers SUB - Admin Panel', { status: 200 });
+  }
+
+  async handleAPI(request, authResult) {
+    const url = new URL(request.url);
+    const apiPath = url.pathname.replace('/api', '');
+    
+    // 添加 CORS 头
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    };
+    
+    try {
+      let response;
+      
+      switch (apiPath) {
+        case '/config':
+          response = await this.handleConfigAPI(request, authResult);
+          break;
+        case '/links':
+          response = await this.handleLinksAPI(request, authResult);
+          break;
+        case '/stats':
+          response = await this.handleStatsAPI(request, authResult);
+          break;
+        case '/nodes':
+          response = await this.handleNodesAPI(request, authResult);
+          break;
+        case '/logs':
+          response = await this.handleLogsAPI(request, authResult);
+          break;
+        case '/cache/clear':
+          response = await this.handleCacheClearAPI(request, authResult);
+          break;
+        default:
+          response = new Response(JSON.stringify({
+            success: false,
+            error: 'API endpoint not found'
+          }), { 
+            status: 404,
+            headers: { 'Content-Type': 'application/json' }
+          });
+      }
+      
+      // 添加 CORS 头到响应
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        response.headers.set(key, value);
+      });
+      
+      return response;
+    } catch (error) {
+      console.error('API Error:', error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: error.message
+      }), {
+        status: 500,
+        headers: { 
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
+      });
+    }
+  }
+
+  async handleSubscription(request, authResult, ctx) {
+    try {
+      // 记录访问统计
+      ctx.waitUntil(this.stats.recordAccess(request));
+      
+      return await this.subscription.generate(request, authResult);
+    } catch (error) {
+      console.error('Subscription error:', error);
+      ctx.waitUntil(logError(this.env, error, request));
+      return new Response('Subscription service error', { status: 500 });
+    }
+  }
+
+  async handleNotFound(authResult) {
+    const config = await this.config.get();
+    if (!authResult.isAuthenticated && config.url302) {
+      return Response.redirect(config.url302, 302);
+    }
+    return new Response('Not Found', { status: 404 });
+  }
+
+  // API 处理方法
+  async handleConfigAPI(request, authResult) {
+    if (!authResult.isAdmin) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Admin access required'
+      }), { 
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (request.method === 'GET') {
+      const config = await this.config.get();
+      return new Response(JSON.stringify({
+        success: true,
+        config: config
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (request.method === 'POST') {
+      try {
+        const newConfig = await request.json();
+        const updatedConfig = await this.config.update(newConfig);
+        
+        return new Response(JSON.stringify({
+          success: true,
+          config: updatedConfig,
+          message: '配置已更新'
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: error.message
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Method not allowed'
+    }), { 
+      status: 405,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  async handleLinksAPI(request, authResult) {
+    if (!authResult.isAuthenticated) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Authentication required'
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (request.method === 'GET') {
+      const links = await this.getUserLinks();
+      return new Response(JSON.stringify({
+        success: true,
+        links: links
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (request.method === 'POST' && authResult.isAdmin) {
+      try {
+        const { links } = await request.json();
+        
+        await this.env.KV.put(KV_KEYS.USER_LINKS, JSON.stringify({
+          links: links.filter(link => link && link.trim()),
+          lastUpdate: Date.now(),
+          updatedBy: authResult.token
+        }));
+        
+        return new Response(JSON.stringify({
+          success: true,
+          message: '链接已保存'
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: error.message
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Method not allowed'
+    }), { 
+      status: 405,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  async handleStatsAPI(request, authResult) {
+    if (!authResult.isAuthenticated) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Authentication required'
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    const stats = await this.stats.get();
+    
+    // 处理敏感信息
+    const publicStats = {
+      totalAccess: stats.totalAccess,
+      lastAccess: stats.lastAccess,
+      clientStats: stats.clientStats,
+      dailyStats: Object.keys(stats.dailyStats || {})
+        .slice(-7) // 只显示最近7天
+        .reduce((acc, key) => {
+          acc[key] = stats.dailyStats[key];
+          return acc;
+        }, {})
+    };
+
+    // 管理员可以看到更多信息
+    if (authResult.isAdmin) {
+      publicStats.ipStats = stats.ipStats;
+      publicStats.startTime = stats.startTime;
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      stats: publicStats
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  async handleNodesAPI(request, authResult) {
+    if (!authResult.isAuthenticated) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Authentication required'
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.PROCESSED_NODES);
+      const nodeData = stored ? JSON.parse(stored) : { nodes: [], count: 0 };
+      
+      return new Response(JSON.stringify({
+        success: true,
+        count: nodeData.count || 0,
+        lastUpdate: nodeData.lastUpdate,
+        summary: {
+          total: nodeData.count || 0,
+          protocols: this.analyzeProtocols(nodeData.nodes || [])
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: error.message
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
+  async handleLogsAPI(request, authResult) {
+    if (!authResult.isAdmin) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Admin access required'
+      }), { 
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    try {
+      const logs = await this.config.getLogs();
+      return new Response(JSON.stringify({
+        success: true,
+        logs: logs.slice(0, 50) // 只返回最近50条
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: error.message
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
+  async handleCacheClearAPI(request, authResult) {
+    if (!authResult.isAdmin) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Admin access required'
+      }), { 
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    try {
+      // 清除缓存逻辑
+      await this.clearCache();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        message: '缓存已清除'
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: error.message
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
+  async clearCache() {
+    // 由于 KV 没有批量删除功能，这里只清除主要缓存键
+    const cacheKeys = [
+      KV_KEYS.PROCESSED_NODES,
+      KV_KEYS.SUBSCRIPTION_CACHE
+    ];
+    
+    for (const key of cacheKeys) {
+      try {
+        await this.env.KV.delete(key);
+      } catch (error) {
+        console.error(`Error deleting cache key ${key}:`, error);
+      }
+    }
+  }
+
+  analyzeProtocols(nodes) {
+    const protocols = {};
+    
+    nodes.forEach(node => {
+      if (node.startsWith('vmess://')) protocols.vmess = (protocols.vmess || 0) + 1;
+      else if (node.startsWith('vless://')) protocols.vless = (protocols.vless || 0) + 1;
+      else if (node.startsWith('trojan://')) protocols.trojan = (protocols.trojan || 0) + 1;
+      else if (node.startsWith('ss://')) protocols.shadowsocks = (protocols.shadowsocks || 0) + 1;
+      else if (node.startsWith('ssr://')) protocols.shadowsocksr = (protocols.shadowsocksr || 0) + 1;
+      else protocols.other = (protocols.other || 0) + 1;
+    });
+    
+    return protocols;
+  }
+
+  async getUserLinks() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.USER_LINKS);
+      if (stored) {
+        const data = JSON.parse(stored);
+        return data.links || [];
+      }
+    } catch (error) {
+      console.error('Error getting user links:', error);
+    }
+    
+    // 返回环境变量中的默认链接
+    return this.env.LINK ? this.env.LINK.trim().split('\n').filter(Boolean) : [];
+  }
+}
+
+/**
+ * 配置管理器
+ */
+class ConfigManager {
+  constructor(env) {
+    this.env = env;
+  }
+
+  async get() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.APP_CONFIG);
+      if (stored) {
+        const config = JSON.parse(stored);
+        return { ...DEFAULT_CONFIG, ...config };
+      }
+    } catch (error) {
+      console.error('Error loading config:', error);
+    }
+    
+    return DEFAULT_CONFIG;
+  }
+
+  async update(newConfig) {
+    try {
+      const currentConfig = await this.get();
+      const updatedConfig = { ...currentConfig, ...newConfig };
+      
+      await this.env.KV.put(KV_KEYS.APP_CONFIG, JSON.stringify(updatedConfig));
+      
+      // 记录配置更新日志
+      await this.logConfigChange(newConfig);
+      
+      return updatedConfig;
+    } catch (error) {
+      console.error('Error updating config:', error);
+      throw error;
+    }
+  }
+
+  async logConfigChange(changes) {
+    try {
+      const logs = await this.getLogs();
+      logs.unshift({
+        timestamp: Date.now(),
+        type: 'config_update',
+        changes: changes,
+        userAgent: 'system'
+      });
+      
+      // 只保留最近100条日志
+      if (logs.length > 100) {
+        logs.splice(100);
+      }
+      
+      await this.env.KV.put(KV_KEYS.SYSTEM_LOGS, JSON.stringify(logs));
+    } catch (error) {
+      console.error('Error logging config change:', error);
+    }
+  }
+
+  async getLogs() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.SYSTEM_LOGS);
+      return stored ? JSON.parse(stored) : [];
+    } catch (error) {
+      console.error('Error getting logs:', error);
+      return [];
+    }
+  }
+}
+
+/**
+ * 认证管理器
+ */
+class AuthManager {
+  constructor(env) {
+    this.env = env;
+  }
+
+  async authenticate(request) {
+    const url = new URL(request.url);
+    let token = url.searchParams.get('token') || 
+                url.pathname.split('/')[1] ||
+                request.headers.get('Authorization')?.replace('Bearer ', '');
+
+    // 处理路径中的 token
+    if (!token && url.pathname !== '/' && !url.pathname.startsWith('/api')) {
+      const pathParts = url.pathname.split('/');
+      if (pathParts.length > 1 && pathParts[1].length > 10) {
+        token = pathParts[1];
+      }
+    }
+
+    const config = await this.getAuthConfig();
+    
+    return {
+      isAuthenticated: this.isValidToken(token, config),
+      isAdmin: token === this.env.TOKEN,
+      isGuest: token === config.guestToken && config.guestToken && token,
+      token: token
+    };
+  }
+
+  isValidToken(token, config) {
+    if (!token) return false;
+    return token === this.env.TOKEN || 
+           (config.guestToken && token === config.guestToken);
+  }
+
+  async getAuthConfig() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.AUTH_CONFIG);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (error) {
+      console.error('Error getting auth config:', error);
+    }
+    
+    return {
+      guestToken: '',
+      tokenExpiry: null,
+      lastAuth: null
+    };
+  }
+
+  async updateAuthConfig(config) {
+    try {
+      await this.env.KV.put(KV_KEYS.AUTH_CONFIG, JSON.stringify({
+        ...config,
+        lastAuth: Date.now()
+      }));
+    } catch (error) {
+      console.error('Error updating auth config:', error);
+      throw error;
+    }
+  }
+}
+
+/**
+ * 订阅管理器
+ */
+class SubscriptionManager {
+  constructor(env) {
+    this.env = env;
+  }
+
+  async generate(request, authResult) {
+    if (!authResult.isAuthenticated) {
+      return new Response('Unauthorized - Please provide valid token', { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const format = this.detectFormat(url);
+    const config = await this.getConfig();
+    
+    // 生成缓存键
+    const cacheKey = `${KV_KEYS.CONVERT_PREFIX}${format}_${this.generateCacheHash(request)}`;
+
+    // 尝试从缓存获取
+    if (config.enableCache) {
+      const cached = await this.getFromCache(cacheKey);
+      if (cached) {
+        return this.createResponse(cached, format);
+      }
+    }
+
+    // 生成新的订阅内容
+    const content = await this.generateSubscriptionContent(format, url);
+    
+    // 缓存结果
+    if (config.enableCache && content) {
+      await this.saveToCache(cacheKey, content, config.subUptime * 3600);
+    }
+    
+    return this.createResponse(content, format);
+  }
+
+  detectFormat(url) {
+    const path = url.pathname.toLowerCase();
+    const target = url.searchParams.get('target');
+    
+    if (target) {
+      return target.toLowerCase();
+    }
+    
+    if (path.includes('clash')) return 'clash';
+    if (path.includes('singbox') || path.includes('sing-box')) return 'singbox';
+    if (path.includes('surge')) return 'surge';
+    if (path.includes('quan') || path.includes('quantumult')) return 'quan';
+    if (path.includes('loon')) return 'loon';
+    if (path.includes('ss')) return 'ss';
+    
+    return 'base64'; // 默认格式
+  }
+
+  async generateSubscriptionContent(format, url) {
+    try {
+      // 获取所有订阅链接
+      const links = await this.getAllSubscriptionLinks();
+      
+      if (links.length === 0) {
+        throw new Error('No subscription links configured');
+      }
+      
+      // 获取并处理节点
+      const nodes = await this.fetchAndProcessNodes(links);
+      
+      if (nodes.length === 0) {
+        throw new Error('No valid nodes found');
+      }
+      
+      // 根据格式转换
+      switch (format) {
+        case 'clash':
+          return await this.convertToClash(nodes, url);
+        case 'singbox':
+        case 'sing-box':
+          return await this.convertToSingBox(nodes, url);
+        case 'surge':
+          return await this.convertToSurge(nodes, url);
+        case 'quan':
+        case 'quantumult':
+          return await this.convertToQuantumult(nodes, url);
+        case 'loon':
+          return await this.convertToLoon(nodes, url);
+        case 'ss':
+          return this.convertToSS(nodes);
+        default:
+          return this.convertToBase64(nodes);
+      }
+    } catch (error) {
+      console.error('Error generating subscription:', error);
+      throw error;
+    }
+  }
+
+  async getAllSubscriptionLinks() {
+    // 获取用户添加的链接
+    const userLinks = await this.getUserLinks();
+    
+    // 获取环境变量中的默认链接
+    const defaultLinks = this.env.LINK ? 
+      this.env.LINK.trim().split('\n').filter(Boolean) : [];
+    
+    // 合并并去重
+    const allLinks = [...new Set([...defaultLinks, ...userLinks])];
+    
+    return allLinks.filter(link => link && link.trim());
+  }
+
+  async getUserLinks() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.USER_LINKS);
+      if (stored) {
+        const data = JSON.parse(stored);
+        return data.links || [];
+      }
+    } catch (error) {
+      console.error('Error getting user links:', error);
+    }
+    return [];
+  }
+
+  async fetchAndProcessNodes(links) {
+    const allNodes = [];
+    const config = await this.getConfig();
+    const errors = [];
+    
+    for (const link of links) {
+      try {
+        const nodes = await this.fetchNodesFromLink(link);
+        allNodes.push(...nodes);
+      } catch (error) {
+        console.error(`Error fetching from ${link}:`, error);
+        errors.push({ link, error: error.message });
+      }
+    }
+    
+    // 去重和过滤
+    let uniqueNodes = config.enableDedup ? 
+      this.deduplicateNodes(allNodes) : allNodes;
+    
+    // 限制节点数量
+    if (config.maxNodes && uniqueNodes.length > config.maxNodes) {
+      uniqueNodes = uniqueNodes.slice(0, config.maxNodes);
+    }
+    
+    // 保存处理后的节点到 KV
+    await this.saveProcessedNodes(uniqueNodes, errors);
+    
+    return uniqueNodes;
+  }
+
+  async fetchNodesFromLink(link) {
+    if (link.startsWith('http')) {
+      // 处理订阅链接
+      const response = await fetch(link, {
+        headers: {
+          'User-Agent': 'CF-Workers-SUB/2.0'
+        },
+        cf: {
+          cacheTtl: 300,
+          cacheEverything: true
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const content = await response.text();
+      return this.parseSubscriptionContent(content);
+    } else {
+      // 处理单个节点链接
+      return [link];
+    }
+  }
+
+  parseSubscriptionContent(content) {
+    try {
+      // 尝试 Base64 解码
+      let decoded;
+      try {
+        decoded = atob(content.trim());
+      } catch {
+        decoded = content;
+      }
+      
+      return decoded.split('\n')
+        .map(line => line.trim())
+        .filter(line => line && this.isValidNodeLink(line));
+    } catch (error) {
+      console.error('Error parsing subscription content:', error);
+      return [];
+    }
+  }
+
+  isValidNodeLink(line) {
+    const protocols = ['vmess://', 'vless://', 'trojan://', 'ss://', 'ssr://', 'hysteria://', 'tuic://'];
+    return protocols.some(protocol => line.startsWith(protocol));
+  }
+
+  deduplicateNodes(nodes) {
+    const seen = new Set();
+    return nodes.filter(node => {
+      const key = this.generateNodeKey(node);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
+  generateNodeKey(node) {
+    try {
+      if (node.startsWith('vmess://')) {
+        const config = JSON.parse(atob(node.substring(8)));
+        return `vmess:${config.add}:${config.port}:${config.id || config.uuid}`;
+      } else if (node.startsWith('vless://')) {
+        const url = new URL(node);
+        return `vless:${url.hostname}:${url.port}:${url.username}`;
+      } else if (node.startsWith('trojan://')) {
+        const url = new URL(node);
+        return `trojan:${url.hostname}:${url.port}:${url.username}`;
+      } else if (node.startsWith('ss://')) {
+        const url = new URL(node);
+        return `ss:${url.hostname}:${url.port}:${url.username}`;
+      }
+      return node;
+    } catch (error) {
+      return node;
+    }
+  }
+
+  convertToBase64(nodes) {
+    return btoa(nodes.join('\n'));
+  }
+
+  async convertToClash(nodes, url) {
+    const config = await this.getConfig();
+    
+    // 构建转换 URL
+    const conversionUrl = new URL(`https://${config.subApi}/sub`);
+    conversionUrl.searchParams.set('target', 'clash');
+    conversionUrl.searchParams.set('url', btoa(nodes.join('\n')));
+    conversionUrl.searchParams.set('config', config.subConfig);
+    
+    // 传递其他参数
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!['target', 'url', 'config'].includes(key)) {
+        conversionUrl.searchParams.set(key, value);
+      }
+    }
+    
+    try {
+      const response = await fetch(conversionUrl.toString(), {
+        cf: {
+          cacheTtl: 300,
+          cacheEverything: true
+        }
+      });
+      
+      if (response.ok) {
+        return await response.text();
+      }
+    } catch (error) {
+      console.error('Conversion API error:', error);
+    }
+    
+    // 如果 API 失败，返回基本的 Clash 配置
+    return this.generateBasicClashConfig(nodes);
+  }
+
+  async convertToSingBox(nodes, url) {
+    const config = await this.getConfig();
+    
+    const conversionUrl = new URL(`https://${config.subApi}/sub`);
+    conversionUrl.searchParams.set('target', 'singbox');
+    conversionUrl.searchParams.set('url', btoa(nodes.join('\n')));
+    
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!['target', 'url'].includes(key)) {
+        conversionUrl.searchParams.set(key, value);
+      }
+    }
+    
+    try {
+      const response = await fetch(conversionUrl.toString());
+      if (response.ok) {
+        return await response.text();
+      }
+    } catch (error) {
+      console.error('SingBox conversion error:', error);
+    }
+    
+    return this.generateBasicSingBoxConfig(nodes);
+  }
+
+  async convertToSurge(nodes, url) {
+    const config = await this.getConfig();
+    
+    const conversionUrl = new URL(`https://${config.subApi}/sub`);
+    conversionUrl.searchParams.set('target', 'surge');
+    conversionUrl.searchParams.set('url', btoa(nodes.join('\n')));
+    
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!['target', 'url'].includes(key)) {
+        conversionUrl.searchParams.set(key, value);
+      }
+    }
+    
+    try {
+      const response = await fetch(conversionUrl.toString());
+      if (response.ok) {
+        return await response.text();
+      }
+    } catch (error) {
+      console.error('Surge conversion error:', error);
+    }
+    
+    return this.generateBasicSurgeConfig(nodes);
+  }
+
+  async convertToQuantumult(nodes, url) {
+    const config = await this.getConfig();
+    
+    const conversionUrl = new URL(`https://${config.subApi}/sub`);
+    conversionUrl.searchParams.set('target', 'quan');
+    conversionUrl.searchParams.set('url', btoa(nodes.join('\n')));
+    
+    try {
+      const response = await fetch(conversionUrl.toString());
+      if (response.ok) {
+        return await response.text();
+      }
+    } catch (error) {
+      console.error('Quantumult conversion error:', error);
+    }
+    
+    return this.convertToBase64(nodes);
+  }
+
+  async convertToLoon(nodes, url) {
+    const config = await this.getConfig();
+    
+    const conversionUrl = new URL(`https://${config.subApi}/sub`);
+    conversionUrl.searchParams.set('target', 'loon');
+    conversionUrl.searchParams.set('url', btoa(nodes.join('\n')));
+    
+    try {
+      const response = await fetch(conversionUrl.toString());
+      if (response.ok) {
+        return await response.text();
+      }
+    } catch (error) {
+      console.error('Loon conversion error:', error);
+    }
+    
+    return this.convertToBase64(nodes);
+  }
+
+  convertToSS(nodes) {
+    const ssNodes = nodes.filter(node => node.startsWith('ss://'));
+    return btoa(ssNodes.join('\n'));
+  }
+
+  generateBasicClashConfig(nodes) {
+    const config = {
+      port: 7890,
+      'socks-port': 7891,
+      'allow-lan': false,
+      mode: 'rule',
+      'log-level': 'info',
+      'external-controller': '127.0.0.1:9090',
+      proxies: [],
+      'proxy-groups': [
+        {
+          name: '🚀 节点选择',
+          type: 'select',
+          proxies: ['♻️ 自动选择', '🔯 故障转移', 'DIRECT']
+        },
+        {
+          name: '♻️ 自动选择',
+          type: 'url-test',
+          proxies: [],
+          url: 'http://www.gstatic.com/generate_204',
+          interval: 300
+        },
+        {
+          name: '🔯 故障转移',
+          type: 'fallback',
+          proxies: [],
+          url: 'http://www.gstatic.com/generate_204',
+          interval: 300
+        }
+      ],
+      rules: [
+        'DOMAIN-SUFFIX,local,DIRECT',
+        'IP-CIDR,127.0.0.0/8,DIRECT',
+        'IP-CIDR,172.16.0.0/12,DIRECT',
+        'IP-CIDR,192.168.0.0/16,DIRECT',
+        'IP-CIDR,10.0.0.0/8,DIRECT',
+        'GEOIP,CN,DIRECT',
+        'MATCH,🚀 节点选择'
+      ]
+    };
+    
+    return `# Clash Config Generated by CF-Workers-SUB
+# Update: ${new Date().toISOString()}
+# Node Count: ${nodes.length}
+
+port: 7890
+socks-port: 7891
+allow-lan: false
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+proxies: []
+
+proxy-groups:
+  - name: 🚀 节点选择
+    type: select
+    proxies:
+      - ♻️ 自动选择
+      - 🔯 故障转移
+      - DIRECT
+
+  - name: ♻️ 自动选择
+    type: url-test
+    proxies: []
+    url: 'http://www.gstatic.com/generate_204'
+    interval: 300
+
+  - name: 🔯 故障转移
+    type: fallback
+    proxies: []
+    url: 'http://www.gstatic.com/generate_204'
+    interval: 300
+
+rules:
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🚀 节点选择`;
+  }
+
+  generateBasicSingBoxConfig(nodes) {
+    const config = {
+      log: {
+        level: 'info',
+        timestamp: true
+      },
+      inbounds: [
+        {
+          type: 'mixed',
+          listen: '127.0.0.1',
+          listen_port: 7890
+        }
+      ],
+      outbounds: [
+        {
+          type: 'selector',
+          tag: 'proxy',
+          outbounds: ['auto']
+        },
+        {
+          type: 'urltest',
+          tag: 'auto',
+          outbounds: [],
+          url: 'http://www.gstatic.com/generate_204',
+          interval: '10m'
+        },
+        {
+          type: 'direct',
+          tag: 'direct'
+        },
+        {
+          type: 'block',
+          tag: 'block'
+        }
+      ],
+      route: {
+        rules: [
+          {
+            geoip: 'cn',
+            outbound: 'direct'
+          },
+          {
+            geosite: 'cn',
+            outbound: 'direct'
+          }
+        ],
+        auto_detect_interface: true
+      }
+    };
+    
+    return JSON.stringify(config, null, 2);
+  }
+
+  generateBasicSurgeConfig(nodes) {
+    return `# Surge Config Generated by CF-Workers-SUB
+# Update: ${new Date().toISOString()}
+# Node Count: ${nodes.length}
+
+[General]
+loglevel = notify
+dns-server = 223.5.5.5, 114.114.114.114
+skip-proxy = localhost, *.local, captive.apple.com
+bypass-tun = 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12
+
+[Proxy]
+DIRECT = direct
+
+[Proxy Group]
+Proxy = select, DIRECT
+
+[Rule]
+GEOIP,CN,DIRECT
+FINAL,Proxy,dns-failed
+`;
+  }
+
+  async getConfig() {
+    const configManager = new ConfigManager(this.env);
+    return await configManager.get();
+  }
+
+  generateCacheHash(request) {
+    const url = new URL(request.url);
+    const key = `${url.pathname}${url.search}`;
+    return btoa(key).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
+  }
+
+  async getFromCache(key) {
+    try {
+      return await this.env.KV.get(key);
+    } catch (error) {
+      console.error('Cache get error:', error);
+      return null;
+    }
+  }
+
+  async saveToCache(key, content, ttl = 3600) {
+    try {
+      await this.env.KV.put(key, content, { expirationTtl: ttl });
+    } catch (error) {
+      console.error('Cache save error:', error);
+    }
+  }
+
+  async saveProcessedNodes(nodes, errors = []) {
+    try {
+      const data = {
+        nodes: nodes,
+        count: nodes.length,
+        errors: errors,
+        lastUpdate: Date.now(),
+        timestamp: new Date().toISOString()
+      };
+      
+      await this.env.KV.put(KV_KEYS.PROCESSED_NODES, JSON.stringify(data));
+    } catch (error) {
+      console.error('Error saving processed nodes:', error);
+    }
+  }
+
+  createResponse(content, format) {
+    const headers = {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'Access-Control-Allow-Origin': '*'
+    };
+
+    if (format === 'clash') {
+      headers['Content-Type'] = 'application/yaml; charset=utf-8';
+      headers['Content-Disposition'] = 'attachment; filename=clash.yaml';
+    } else if (format === 'singbox' || format === 'sing-box') {
+      headers['Content-Type'] = 'application/json; charset=utf-8';
+      headers['Content-Disposition'] = 'attachment; filename=singbox.json';
+    } else if (format === 'surge') {
+      headers['Content-Type'] = 'text/plain; charset=utf-8';
+      headers['Content-Disposition'] = 'attachment; filename=surge.conf';
+    }
+
+    return new Response(content, { headers });
+  }
+}
+
+/**
+ * 统计管理器
+ */
+class StatsManager {
+  constructor(env) {
+    this.env = env;
+  }
+
+  async recordAccess(request) {
+    try {
+      const config = await this.getConfig();
+      if (!config.enableStats) return;
+      
+      const stats = await this.get();
+      const now = new Date();
+      const today = now.toISOString().split('T')[0];
+      
+      // 更新统计数据
+      stats.totalAccess = (stats.totalAccess || 0) + 1;
+      stats.lastAccess = Date.now();
+      
+      // 每日统计
+      if (!stats.dailyStats) stats.dailyStats = {};
+      stats.dailyStats[today] = (stats.dailyStats[today] || 0) + 1;
+      
+      // 客户端统计
+      const userAgent = request.headers.get('User-Agent') || 'Unknown';
+      const clientType = this.detectClientType(userAgent);
+      
+      if (!stats.clientStats) stats.clientStats = {};
+      stats.clientStats[clientType] = (stats.clientStats[clientType] || 0) + 1;
+      
+      // IP 统计 (简化版)
+      const ip = request.headers.get('CF-Connecting-IP') || 'Unknown';
+      if (!stats.ipStats) stats.ipStats = {};
+      const ipKey = this.hashIP(ip); // 对 IP 进行哈希处理以保护隐私
+      stats.ipStats[ipKey] = (stats.ipStats[ipKey] || 0) + 1;
+      
+      // 清理旧数据
+      this.cleanupOldStats(stats);
+      
+      await this.save(stats);
+    } catch (error) {
+      console.error('Error recording access:', error);
+    }
+  }
+
+  async get() {
+    try {
+      const stored = await this.env.KV.get(KV_KEYS.ACCESS_STATS);
+      return stored ? JSON.parse(stored) : this.getDefaultStats();
+    } catch (error) {
+      console.error('Error getting stats:', error);
+      return this.getDefaultStats();
+    }
+  }
+
+  async save(stats) {
+    try {
+      await this.env.KV.put(KV_KEYS.ACCESS_STATS, JSON.stringify(stats));
+    } catch (error) {
+      console.error('Error saving stats:', error);
+    }
+  }
+
+  getDefaultStats() {
+    return {
+      totalAccess: 0,
+      lastAccess: null,
+      dailyStats: {},
+      clientStats: {},
+      ipStats: {},
+      startTime: Date.now()
+    };
+  }
+
+  detectClientType(userAgent) {
+    const ua = userAgent.toLowerCase();
+    
+    if (ua.includes('clash')) return 'Clash';
+    if (ua.includes('surge')) return 'Surge';
+    if (ua.includes('quantumult')) return 'QuantumultX';
+    if (ua.includes('shadowrocket')) return 'Shadowrocket';
+    if (ua.includes('sing-box')) return 'SingBox';
+    if (ua.includes('v2ray')) return 'V2Ray';
+    if (ua.includes('curl')) return 'cURL';
+    if (ua.includes('wget')) return 'Wget';
+    if (ua.includes('loon')) return 'Loon';
+    if (ua.includes('stash')) return 'Stash';
+    
+    return 'Other';
+  }
+
+  hashIP(ip) {
+    // 简单的 IP 哈希函数以保护隐私
+    let hash = 0;
+    for (let i = 0; i < ip.length; i++) {
+      const char = ip.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // 转换为32位整数
+    }
+    return Math.abs(hash).toString(36);
+  }
+
+  cleanupOldStats(stats) {
+    // 清理30天前的每日统计
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoffStr = cutoffDate.toISOString().split('T')[0];
+    
+    for (const date in stats.dailyStats) {
+      if (date < cutoffStr) {
+        delete stats.dailyStats[date];
+      }
+    }
+    
+    // 限制 IP 统计数量
+    const ipEntries = Object.entries(stats.ipStats || {});
+    if (ipEntries.length > 1000) {
+      // 保留访问次数最多的1000个IP
+      const sorted = ipEntries.sort((a, b) => b[1] - a[1]);
+      stats.ipStats = Object.fromEntries(sorted.slice(0, 1000));
+    }
+  }
+
+  async getConfig() {
+    const configManager = new ConfigManager(this.env);
+    return await configManager.get();
+  }
+}
+
+// 工具函数
+async function logError(env, error, request) {
+  try {
+    const logs = await env.KV.get(KV_KEYS.SYSTEM_LOGS);
+    const logArray = logs ? JSON.parse(logs) : [];
+    
+    logArray.unshift({
+      timestamp: Date.now(),
+      type: 'error',
+      error: error.message,
+      stack: error.stack,
+      url: request.url,
+      userAgent: request.headers.get('User-Agent'),
+      ip: request.headers.get('CF-Connecting-IP')
+    });
+    
+    // 只保留最近100条错误日志
+    if (logArray.length > 100) {
+      logArray.splice(100);
+    }
+    
+    await env.KV.put(KV_KEYS.SYSTEM_LOGS, JSON.stringify(logArray));
+  } catch (logError) {
+    console.error('Failed to log error:', logError);
+  }
+}
