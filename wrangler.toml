@@ -1,4 +1,5 @@
-// wrangler.toml
+# wrangler.toml
+
 [env.production]
 name = "cf-workers-sub"
 compatibility_date = "2025-01-26"
